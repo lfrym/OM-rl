@@ -51,6 +51,33 @@ Instructions: G=grab g=drop R=rotateCW r=rotateCCW E=extend e=retract P=pivotCW 
 """
 
 
+FEW_SHOT_EXAMPLES = """\
+EXAMPLE — A puzzle requiring calcification (Air -> Salt):
+
+Puzzle: 1 input (Air), 1 output (Salt). Needs glyph-calcification.
+Layout: input on left, calcification glyph in center, output on right.
+Arm 0 shuttles atoms from input to glyph. Arm 1 shuttles from glyph to output.
+Both arms use 3 CW rotations (180°) to swing between their two positions.
+Arm 1 starts later (cycle 7) to give time for calcification to activate.
+The C (repeat) instruction loops the tape.
+
+Solution:
+INPUT pos=(-2,0) rot=0 idx=0
+OUTPUT pos=(2,0) rot=0 idx=0
+GLYPH glyph-calcification pos=(0,0) rot=0
+ARM arm1 pos=(-1,0) rot=3 ext=1 id=0
+  TAPE: 1:G 2:R 3:R 4:R 5:g 6:R 7:R 8:R 9:C
+ARM arm1 pos=(1,0) rot=3 ext=1 id=1
+  TAPE: 7:G 8:R 9:R 10:R 11:g 12:R 13:R 14:R 15:C
+
+Key patterns:
+- Arms at adjacent hexes to their targets, using rotation to shuttle atoms
+- Arm at (-1,0) rot=3 ext=1: gripper at (-2,0)=input. After 3xR: gripper at (0,0)=glyph.
+- Arm at (1,0) rot=3 ext=1: gripper at (0,0)=glyph. After 3xR: gripper at (2,0)=output.
+- G=grab, R=rotateCW, g=drop, C=repeat the tape from the beginning.
+"""
+
+
 def format_initial_observation(puzzle: Puzzle) -> str:
     """Format the initial observation for a puzzle (no prior attempts)."""
     puzzle_text = puzzle_to_text(puzzle)
@@ -61,6 +88,7 @@ Solve this Opus Magnum puzzle. Output a complete solution.
 
 {GAME_REFERENCE}
 {SOLUTION_FORMAT}
+{FEW_SHOT_EXAMPLES}
 {puzzle_text}
 {io_text}
 Output ONLY the solution — no explanation needed."""
