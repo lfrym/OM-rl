@@ -218,8 +218,7 @@ def train(config: TrainingConfig, verbosity: int = NORMAL) -> None:
                 continue
 
             # Cap total sequence to avoid OOM on training backward pass
-            # 2048 is tight but fits on 24GB GPU with gradient checkpointing
-            max_train_seq = 2048
+            max_train_seq = 4096
             full_text = episode.prompt + trajectory
             inputs = tokenizer(full_text, return_tensors="pt", truncation=True,
                                max_length=max_train_seq).to(model.device)

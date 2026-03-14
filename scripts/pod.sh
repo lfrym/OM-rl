@@ -16,8 +16,8 @@ set -euo pipefail
 
 # Pod SSH config — update these if the pod changes
 POD_KEY="$HOME/.runpod/ssh/RunPod-Key-Go"
-POD_HOST="root@67.223.143.80"
-POD_PORT="19325"
+POD_HOST="root@135.84.176.142"
+POD_PORT="20217"
 POD_DIR="/root/OM-rl"
 SSH_OPTS="-o StrictHostKeyChecking=no -o ConnectTimeout=10"
 
