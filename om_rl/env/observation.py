@@ -52,16 +52,12 @@ Instructions: G=grab g=drop R=rotateCW r=rotateCCW E=extend e=retract P=pivotCW 
 
 
 FEW_SHOT_EXAMPLES = """\
-EXAMPLE — A puzzle requiring calcification (Air -> Salt):
+WORKED EXAMPLE — Converting Air to Salt using glyph-calcification:
 
-Puzzle: 1 input (Air), 1 output (Salt). Needs glyph-calcification.
-Layout: input on left, calcification glyph in center, output on right.
-Arm 0 shuttles atoms from input to glyph. Arm 1 shuttles from glyph to output.
-Both arms use 3 CW rotations (180°) to swing between their two positions.
-Arm 1 starts later (cycle 7) to give time for calcification to activate.
-The C (repeat) instruction loops the tape.
+Puzzle: 1 input (Air), 1 output (Salt). The glyph-calcification converts any cardinal element to salt.
+Layout: input at (-2,0), GLYPH glyph-calcification at (0,0), output at (2,0).
+Two arms shuttle atoms: arm 0 moves input->glyph, arm 1 moves glyph->output.
 
-Solution:
 INPUT pos=(-2,0) rot=0 idx=0
 OUTPUT pos=(2,0) rot=0 idx=0
 GLYPH glyph-calcification pos=(0,0) rot=0
@@ -70,11 +66,12 @@ ARM arm1 pos=(-1,0) rot=3 ext=1 id=0
 ARM arm1 pos=(1,0) rot=3 ext=1 id=1
   TAPE: 7:G 8:R 9:R 10:R 11:g 12:R 13:R 14:R 15:C
 
-Key patterns:
-- Arms at adjacent hexes to their targets, using rotation to shuttle atoms
-- Arm at (-1,0) rot=3 ext=1: gripper at (-2,0)=input. After 3xR: gripper at (0,0)=glyph.
-- Arm at (1,0) rot=3 ext=1: gripper at (0,0)=glyph. After 3xR: gripper at (2,0)=output.
-- G=grab, R=rotateCW, g=drop, C=repeat the tape from the beginning.
+How this works:
+- Arm at (-1,0) rot=3 ext=1: gripper starts at (-2,0)=input. G grabs atom. 3x R rotates to (0,0)=glyph. g drops. 3x R returns to input. C repeats.
+- Arm at (1,0) rot=3 ext=1: gripper starts at (0,0)=glyph. Waits until cycle 7 for calcification. G grabs salt. 3x R rotates to (2,0)=output. g drops. C repeats.
+- IMPORTANT: The GLYPH line is required! Without it, atoms won't be transformed.
+- IMPORTANT: Use exact glyph type names from the list above (e.g. glyph-calcification, NOT glyph-calculator).
+- Arm type is "arm1" (not "ARM 1" or just "1").
 """
 
 
