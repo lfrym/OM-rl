@@ -29,7 +29,12 @@ def main():
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
     parser.add_argument("--max-attempts", type=int, default=3, help="Max submissions per episode (multi-turn)")
     parser.add_argument("--start-level", type=int, default=1, help="Starting curriculum level")
-    parser.add_argument("--log-level", default="INFO", help="Logging level")
+    parser.add_argument(
+        "--verbosity", "-v", type=int, default=1, choices=[0, 1, 2, 3],
+        help="Logging verbosity: 0=QUIET (step summaries), 1=NORMAL (+episodes), "
+             "2=VERBOSE (+attempt details/previews), 3=TRACE (full generations/feedback)"
+    )
+    parser.add_argument("--log-level", default="INFO", help="Python logging level")
     args = parser.parse_args()
 
     logging.basicConfig(
@@ -59,9 +64,9 @@ def main():
 
     logging.info(f"Training config: model={config.model.model_name}, "
                  f"lora={config.model.use_lora}, 4bit={config.model.load_in_4bit}, "
-                 f"max_attempts={config.max_attempts}")
+                 f"max_attempts={config.max_attempts}, verbosity={args.verbosity}")
 
-    train(config)
+    train(config, verbosity=args.verbosity)
 
 
 if __name__ == "__main__":

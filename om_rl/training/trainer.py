@@ -18,6 +18,7 @@ from typing import Any
 from .config import TrainingConfig
 from .dataset import PuzzlePool
 from .rollout import collect_rollouts, RolloutBatch, EpisodeResult
+from om_rl.utils.logging import TrainingLogger, QUIET, NORMAL, VERBOSE, TRACE
 
 logger = logging.getLogger(__name__)
 
@@ -72,7 +73,7 @@ def setup_model_and_tokenizer(config: TrainingConfig):
     return model, tokenizer
 
 
-def train(config: TrainingConfig) -> None:
+def train(config: TrainingConfig, verbosity: int = NORMAL) -> None:
     """Main training loop.
 
     GRPO with multi-turn episodes:
@@ -81,15 +82,26 @@ def train(config: TrainingConfig) -> None:
     3. Compute rewards: best outcome across all attempts in each episode
     4. Compute group-relative advantages (group = K episodes on same puzzle)
     5. Update policy with REINFORCE-style gradient over full trajectories
+
+    Args:
+        config: Training configuration.
+        verbosity: Logging verbosity (0=QUIET, 1=NORMAL, 2=VERBOSE, 3=TRACE).
     """
     import torch
     from torch.optim import AdamW
+    from collections import defaultdict
     import json
     import time
 
     logger.info(f"Starting training with config: {config}")
     output_dir = Path(config.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
+
+    # Set up structured logger
+    tlog = TrainingLogger(
+        verbosity=verbosity,
+        log_dir=output_dir / "logs",
+    )
 
     # Save config
     with open(output_dir / "config.json", "w") as f:
@@ -102,6 +114,7 @@ def train(config: TrainingConfig) -> None:
             "max_attempts": config.max_attempts,
             "kl_coeff": config.kl_coeff,
             "intermediate_rewards": config.reward.use_intermediate_rewards,
+            "verbosity": verbosity,
         }, f, indent=2)
 
     # Setup
@@ -125,11 +138,7 @@ def train(config: TrainingConfig) -> None:
     epoch_stats: list[dict] = []
 
     def generate_fn(prompt: str) -> tuple[str, int]:
-        """Generate a completion using the model.
-
-        In multi-turn mode, the prompt grows with each turn (includes prior
-        attempts and feedback), so the model sees its previous mistakes.
-        """
+        """Generate a completion using the model."""
         inputs = tokenizer(prompt, return_tensors="pt", truncation=True,
                            max_length=2048).to(model.device)
         with torch.no_grad():
@@ -140,49 +149,53 @@ def train(config: TrainingConfig) -> None:
                 do_sample=True,
                 pad_token_id=tokenizer.pad_token_id,
             )
-        # Decode only the generated part
         gen_ids = outputs[0][inputs["input_ids"].shape[1]:]
         completion = tokenizer.decode(gen_ids, skip_special_tokens=True)
         tokens_used = len(gen_ids)
         return completion, tokens_used
 
     logger.info(f"Starting training loop (max_steps={config.max_steps}, "
-                f"max_attempts={config.max_attempts})")
+                f"max_attempts={config.max_attempts}, verbosity={verbosity})")
 
     while step < config.max_steps:
         step_start = time.time()
 
         # Sample puzzles
         puzzles = pool.sample(config.batch_size, config.curriculum)
+        puzzle_names = [p.name for p in puzzles]
+
+        tlog.step_start(step + 1, puzzle_names, config.num_completions)
 
         # Collect rollouts: K multi-turn episodes per puzzle
-        logger.info(f"Step {step+1}: generating {config.num_completions} episodes "
-                     f"for {config.batch_size} puzzle(s)...")
         all_episodes: list[EpisodeResult] = []
         for pi, puzzle in enumerate(puzzles):
             for ki in range(config.num_completions):
-                logger.info(f"  Puzzle {pi+1}/{config.batch_size} "
-                             f"episode {ki+1}/{config.num_completions}: {puzzle.name}")
+                tlog.episode_start(puzzle.name, ki + 1, config.num_completions)
+
                 batch = collect_rollouts(
                     [puzzle], generate_fn, config.reward, config.cycle_limit,
                     max_attempts=config.max_attempts,
+                    tlog=tlog,
                 )
                 ep = batch.results[0]
-                logger.info(f"    -> {ep.num_attempts} attempts, "
-                             f"{ep.total_tokens} tokens, "
-                             f"reward={ep.final_reward:.3f}, "
-                             f"solved={ep.verified}")
+
+                tlog.episode_end(
+                    puzzle=puzzle.name,
+                    episode=ki + 1,
+                    attempts=ep.num_attempts,
+                    total_tokens=ep.total_tokens,
+                    reward=ep.final_reward,
+                    verified=ep.verified,
+                )
                 all_episodes.extend(batch.results)
 
         # Compute group-relative advantages
-        # Group by puzzle, then normalize rewards within each group
-        from collections import defaultdict
         groups: dict[str, list[EpisodeResult]] = defaultdict(list)
         for ep in all_episodes:
             groups[ep.puzzle_name].append(ep)
 
-        # GRPO: advantage = (reward - group_mean) / (group_std + eps)
         advantages: list[tuple[EpisodeResult, float]] = []
+        adv_log: list[tuple[str, float, float]] = []
         for puzzle_name, group in groups.items():
             rewards = [ep.final_reward for ep in group]
             mean_r = sum(rewards) / len(rewards)
@@ -191,6 +204,9 @@ def train(config: TrainingConfig) -> None:
             for ep in group:
                 adv = (ep.final_reward - mean_r) / (std_r + 1e-8)
                 advantages.append((ep, adv))
+                adv_log.append((ep.puzzle_name, ep.final_reward, adv))
+
+        tlog.grpo_advantages(adv_log)
 
         # Compute policy gradient loss over full trajectories
         total_loss = torch.tensor(0.0, device=model.device)
@@ -201,8 +217,7 @@ def train(config: TrainingConfig) -> None:
             if not trajectory.strip():
                 continue
 
-            # Tokenize prompt + full trajectory
-            # Cap total sequence at 4096 to avoid OOM on training backward pass
+            # Cap total sequence to avoid OOM on training backward pass
             max_train_seq = 4096
             full_text = episode.prompt + trajectory
             inputs = tokenizer(full_text, return_tensors="pt", truncation=True,
@@ -217,7 +232,6 @@ def train(config: TrainingConfig) -> None:
 
             # Forward pass
             outputs = model(**inputs, labels=inputs["input_ids"])
-            # Get per-token log probs for the trajectory part only
             logits = outputs.logits[:, prompt_len - 1:-1, :]
             labels = inputs["input_ids"][:, prompt_len:]
             log_probs = torch.nn.functional.log_softmax(logits, dim=-1)
@@ -231,16 +245,21 @@ def train(config: TrainingConfig) -> None:
         if num_tokens > 0:
             total_loss = total_loss / len(advantages)
 
-            # Backward + update
             optimizer.zero_grad()
             total_loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             optimizer.step()
 
+        tlog.training_update(
+            loss=total_loss.item() if isinstance(total_loss, torch.Tensor) else 0,
+            num_tokens=num_tokens,
+            num_episodes=len(all_episodes),
+        )
+
         step += 1
         step_time = time.time() - step_start
 
-        # Logging
+        # Stats
         batch_stats = {
             "step": step,
             "loss": total_loss.item() if isinstance(total_loss, torch.Tensor) else 0,
@@ -255,23 +274,26 @@ def train(config: TrainingConfig) -> None:
         }
         epoch_stats.append(batch_stats)
 
-        # Always log (log_every controls verbose vs summary in longer runs)
-        logger.info(
-            f"Step {step} DONE: loss={batch_stats['loss']:.4f} "
-            f"reward={batch_stats['mean_reward']:.3f} "
-            f"solve={batch_stats['solve_rate']:.2%} "
-            f"attempts={batch_stats['mean_attempts']:.1f} "
-            f"tokens={batch_stats['mean_tokens']:.0f} "
-            f"level={pool.current_level} "
-            f"time={step_time:.1f}s"
+        tlog.step_end(
+            step=step,
+            loss=batch_stats["loss"],
+            mean_reward=batch_stats["mean_reward"],
+            solve_rate=batch_stats["solve_rate"],
+            mean_attempts=batch_stats["mean_attempts"],
+            mean_tokens=batch_stats["mean_tokens"],
+            level=pool.current_level,
+            elapsed=step_time,
+            num_verified=batch_stats["num_verified"],
+            total_episodes=batch_stats["total_episodes"],
         )
 
-        # Evaluation (multi-turn eval too)
+        # Evaluation
         if step % config.eval_every == 0:
             eval_puzzles = pool.sample(config.eval_puzzles, config.curriculum)
             eval_batch = collect_rollouts(
                 eval_puzzles, generate_fn, config.reward, config.cycle_limit,
                 max_attempts=config.max_attempts,
+                tlog=tlog,
             )
             eval_stats = eval_batch.stats()
             logger.info(
@@ -281,10 +303,8 @@ def train(config: TrainingConfig) -> None:
                 f"mean_attempts={eval_stats['mean_attempts']:.1f}"
             )
 
-            # Curriculum advancement
             pool.maybe_advance_level(eval_stats["solve_rate"], config.curriculum)
 
-            # Generate puzzles for new level if needed
             if pool.current_level not in pool.generated_puzzles:
                 pool.generate_puzzles(
                     pool.current_level,
@@ -310,4 +330,5 @@ def train(config: TrainingConfig) -> None:
     with open(output_dir / "training_stats.json", "w") as f:
         json.dump(epoch_stats, f, indent=2)
 
+    tlog.close()
     logger.info(f"Training complete. Final model saved to {final_dir}")

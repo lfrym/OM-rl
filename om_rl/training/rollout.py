@@ -12,7 +12,7 @@ learning signal than single-turn.
 
 from __future__ import annotations
 
-import logging
+import time as _time
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -21,8 +21,7 @@ from vendor.opus_magnum.models import Puzzle
 from om_rl.env.environment import OpusMagnumEnv, EnvironmentConfig, StepResult
 from om_rl.env.observation import format_initial_observation
 from om_rl.env.reward import RewardConfig
-
-logger = logging.getLogger(__name__)
+from om_rl.utils.logging import TrainingLogger
 
 
 @dataclass
@@ -137,6 +136,7 @@ def collect_rollouts(
     reward_config: RewardConfig | None = None,
     cycle_limit: int = 100_000,
     max_attempts: int = 1,
+    tlog: TrainingLogger | None = None,
 ) -> RolloutBatch:
     """Collect rollouts for a batch of puzzles.
 
@@ -151,6 +151,7 @@ def collect_rollouts(
         max_attempts: Max solution submissions per episode.
             1 = single-turn (original behavior).
             >1 = multi-turn (model iterates with feedback).
+        tlog: TrainingLogger for structured logging.
 
     Returns:
         RolloutBatch with all episode results.
@@ -176,13 +177,18 @@ def collect_rollouts(
         total_tokens = 0
 
         for attempt in range(max_attempts):
-            import time as _time
             gen_start = _time.monotonic()
 
             try:
                 solution_text, tokens_used = generate_fn(context)
             except Exception as e:
-                logger.error(f"Generation failed for {puzzle.name} attempt {attempt+1}: {e}")
+                if tlog:
+                    tlog.attempt(
+                        puzzle=puzzle.name, attempt=attempt + 1,
+                        max_attempts=max_attempts, generation="",
+                        tokens=0, elapsed=0, verified=False,
+                        error=f"generation_error: {e}",
+                    )
                 episode.turns.append(Turn(
                     generation="",
                     tokens=0,
@@ -194,24 +200,26 @@ def collect_rollouts(
                 break
 
             gen_elapsed = _time.monotonic() - gen_start
-            tok_per_sec = tokens_used / gen_elapsed if gen_elapsed > 0 else 0
             total_tokens += tokens_used
 
             step_result = env.step(solution_text, total_tokens)
             verified = step_result.info.get("verified", False)
-            error_msg = step_result.info.get("error_message", "")
-            progress = step_result.info.get("progress_score", "")
+            error_msg = step_result.info.get("error_message")
+            progress = step_result.info.get("progress_score")
 
-            # Log generation details including a preview of what the model produced
-            preview = solution_text.replace('\n', ' ')[:120]
-            logger.info(
-                f"  {puzzle.name} attempt {attempt+1}/{max_attempts}: "
-                f"{tokens_used} tok in {gen_elapsed:.1f}s ({tok_per_sec:.0f} tok/s) "
-                f"{'SOLVED' if verified else 'FAILED'}"
-                f"{f' err={error_msg[:60]}' if error_msg else ''}"
-                f"{f' progress={progress:.2f}' if isinstance(progress, float) and progress > 0 else ''}"
-            )
-            logger.info(f"    preview: {preview}...")
+            if tlog:
+                tlog.attempt(
+                    puzzle=puzzle.name,
+                    attempt=attempt + 1,
+                    max_attempts=max_attempts,
+                    generation=solution_text,
+                    tokens=tokens_used,
+                    elapsed=gen_elapsed,
+                    verified=verified,
+                    error=error_msg,
+                    progress=progress if isinstance(progress, float) else None,
+                    feedback=step_result.observation if not verified else None,
+                )
 
             episode.turns.append(Turn(
                 generation=solution_text,
