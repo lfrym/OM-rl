@@ -176,6 +176,9 @@ def collect_rollouts(
         total_tokens = 0
 
         for attempt in range(max_attempts):
+            import time as _time
+            gen_start = _time.monotonic()
+
             try:
                 solution_text, tokens_used = generate_fn(context)
             except Exception as e:
@@ -190,15 +193,29 @@ def collect_rollouts(
                 ))
                 break
 
+            gen_elapsed = _time.monotonic() - gen_start
+            tok_per_sec = tokens_used / gen_elapsed if gen_elapsed > 0 else 0
             total_tokens += tokens_used
+
             step_result = env.step(solution_text, total_tokens)
+            verified = step_result.info.get("verified", False)
+            error_msg = step_result.info.get("error_message", "")
+            progress = step_result.info.get("progress_score", "")
+
+            logger.info(
+                f"  {puzzle.name} attempt {attempt+1}/{max_attempts}: "
+                f"{tokens_used} tok in {gen_elapsed:.1f}s ({tok_per_sec:.0f} tok/s) "
+                f"{'SOLVED' if verified else 'FAILED'}"
+                f"{f' err={error_msg[:60]}' if error_msg else ''}"
+                f"{f' progress={progress:.2f}' if isinstance(progress, float) and progress > 0 else ''}"
+            )
 
             episode.turns.append(Turn(
                 generation=solution_text,
                 tokens=tokens_used,
                 observation=step_result.observation,
                 reward=step_result.reward,
-                verified=step_result.info.get("verified", False),
+                verified=verified,
                 info=step_result.info,
             ))
 

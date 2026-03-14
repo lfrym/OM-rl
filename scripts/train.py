@@ -25,6 +25,7 @@ def main():
     parser.add_argument("--lr", type=float, default=5e-6, help="Learning rate")
     parser.add_argument("--no-lora", action="store_true", help="Disable LoRA (full finetune)")
     parser.add_argument("--no-4bit", action="store_true", help="Disable 4-bit quantization")
+    parser.add_argument("--max-tokens", type=int, default=1024, help="Max tokens per generation")
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
     parser.add_argument("--max-attempts", type=int, default=3, help="Max submissions per episode (multi-turn)")
     parser.add_argument("--start-level", type=int, default=1, help="Starting curriculum level")
@@ -42,6 +43,7 @@ def main():
             model_name=args.model,
             use_lora=not args.no_lora,
             load_in_4bit=not args.no_4bit,
+            max_new_tokens=args.max_tokens,
         ),
         num_completions=args.num_completions,
         learning_rate=args.lr,

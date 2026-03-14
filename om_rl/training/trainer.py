@@ -152,13 +152,22 @@ def train(config: TrainingConfig) -> None:
         puzzles = pool.sample(config.batch_size, config.curriculum)
 
         # Collect rollouts: K multi-turn episodes per puzzle
+        logger.info(f"Step {step+1}: generating {config.num_completions} episodes "
+                     f"for {config.batch_size} puzzle(s)...")
         all_episodes: list[EpisodeResult] = []
-        for puzzle in puzzles:
-            for _ in range(config.num_completions):
+        for pi, puzzle in enumerate(puzzles):
+            for ki in range(config.num_completions):
+                logger.info(f"  Puzzle {pi+1}/{config.batch_size} "
+                             f"episode {ki+1}/{config.num_completions}: {puzzle.name}")
                 batch = collect_rollouts(
                     [puzzle], generate_fn, config.reward, config.cycle_limit,
                     max_attempts=config.max_attempts,
                 )
+                ep = batch.results[0]
+                logger.info(f"    -> {ep.num_attempts} attempts, "
+                             f"{ep.total_tokens} tokens, "
+                             f"reward={ep.final_reward:.3f}, "
+                             f"solved={ep.verified}")
                 all_episodes.extend(batch.results)
 
         # Compute group-relative advantages
@@ -241,15 +250,16 @@ def train(config: TrainingConfig) -> None:
         }
         epoch_stats.append(batch_stats)
 
-        if step % config.log_every == 0:
-            logger.info(
-                f"Step {step}: loss={batch_stats['loss']:.4f} "
-                f"reward={batch_stats['mean_reward']:.3f} "
-                f"solve={batch_stats['solve_rate']:.2%} "
-                f"attempts={batch_stats['mean_attempts']:.1f} "
-                f"level={pool.current_level} "
-                f"time={step_time:.1f}s"
-            )
+        # Always log (log_every controls verbose vs summary in longer runs)
+        logger.info(
+            f"Step {step} DONE: loss={batch_stats['loss']:.4f} "
+            f"reward={batch_stats['mean_reward']:.3f} "
+            f"solve={batch_stats['solve_rate']:.2%} "
+            f"attempts={batch_stats['mean_attempts']:.1f} "
+            f"tokens={batch_stats['mean_tokens']:.0f} "
+            f"level={pool.current_level} "
+            f"time={step_time:.1f}s"
+        )
 
         # Evaluation (multi-turn eval too)
         if step % config.eval_every == 0:
