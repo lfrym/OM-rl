@@ -58,7 +58,7 @@ class TrainingConfig:
     # Environment
     max_attempts: int = 3  # Multi-turn: model submits, sees feedback, iterates
     cycle_limit: int = 100_000
-    reward: RewardConfig = field(default_factory=lambda: RewardConfig(use_intermediate_rewards=True))
+    reward: RewardConfig = field(default_factory=lambda: RewardConfig(use_structure_scoring=True))
 
     # Curriculum
     curriculum: CurriculumConfig = field(default_factory=CurriculumConfig)

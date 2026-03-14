@@ -219,6 +219,9 @@ def collect_rollouts(
                     error=error_msg,
                     progress=progress if isinstance(progress, float) else None,
                     feedback=step_result.observation if not verified else None,
+                    structure_score=step_result.info.get("structure_score"),
+                    structure_level=step_result.info.get("structure_level"),
+                    structure_desc=step_result.info.get("structure_desc"),
                 )
 
             episode.turns.append(Turn(

@@ -141,6 +141,9 @@ class TrainingLogger:
         error: str | None = None,
         progress: float | None = None,
         feedback: str | None = None,
+        structure_score: float | None = None,
+        structure_level: int | None = None,
+        structure_desc: str | None = None,
     ) -> None:
         tok_per_sec = tokens / elapsed if elapsed > 0 else 0
 
@@ -151,6 +154,8 @@ class TrainingLogger:
                 f"    Attempt {attempt}/{max_attempts}: "
                 f"{tokens} tok in {elapsed:.1f}s ({tok_per_sec:.0f} tok/s) {status}",
             ]
+            if structure_score is not None:
+                parts.append(f"      Structure: L{structure_level} score={structure_score:.2f} ({structure_desc})")
             if error:
                 parts.append(f"      Error: {error[:100]}")
             if progress is not None and progress > 0:

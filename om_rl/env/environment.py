@@ -41,18 +41,7 @@ class EnvironmentConfig:
 
 
 class OpusMagnumEnv:
-    """RL environment for Opus Magnum puzzle solving.
-
-    Usage:
-        env = OpusMagnumEnv(config)
-        obs = env.reset(puzzle)
-        while True:
-            solution_text = model.generate(obs)
-            result = env.step(solution_text, tokens_used)
-            if result.done:
-                break
-            obs = result.observation
-    """
+    """RL environment for Opus Magnum puzzle solving."""
 
     def __init__(self, config: EnvironmentConfig | None = None):
         self.config = config or EnvironmentConfig()
@@ -74,10 +63,7 @@ class OpusMagnumEnv:
         return self._solved
 
     def reset(self, puzzle: Puzzle) -> str:
-        """Start a new episode with the given puzzle.
-
-        Returns the initial observation string.
-        """
+        """Start a new episode with the given puzzle."""
         self._puzzle = puzzle
         self._attempt = 0
         self._total_tokens = 0
@@ -85,20 +71,13 @@ class OpusMagnumEnv:
         return format_initial_observation(puzzle)
 
     def step(self, solution_text: str, tokens_used: int) -> StepResult:
-        """Submit a solution attempt and get feedback.
-
-        Args:
-            solution_text: The model's solution in text format.
-            tokens_used: Total tokens used so far in this episode.
-
-        Returns:
-            StepResult with observation, reward, done flag, and info dict.
-        """
+        """Submit a solution attempt and get feedback."""
         if self._puzzle is None:
             raise RuntimeError("Call reset() before step()")
 
         self._attempt += 1
         self._total_tokens = tokens_used
+        rcfg = self.config.reward_config
 
         info: dict[str, Any] = {
             "attempt": self._attempt,
@@ -107,13 +86,19 @@ class OpusMagnumEnv:
         }
 
         # Check token budget
-        if tokens_used > self.config.reward_config.token_budget:
+        if tokens_used > rcfg.token_budget:
             return StepResult(
                 observation="Token budget exceeded. Episode terminated.",
-                reward=compute_reward(False, False, tokens_used, self.config.reward_config),
+                reward=compute_reward(False, tokens_used, rcfg),
                 done=True,
                 info={**info, "termination": "budget_exceeded"},
             )
+
+        # Compute structure score (always, for logging — only affects reward if enabled)
+        from om_rl.complexity.structure_scorer import score_solution_structure
+        omsim_error: str | None = None
+        omsim_error_cycle: int = -1
+        omsim_verified = False
 
         # Try to parse the solution
         try:
@@ -121,19 +106,31 @@ class OpusMagnumEnv:
             parseable = True
         except Exception as e:
             logger.debug(f"Parse error: {e}")
-            reward = compute_reward(False, False, tokens_used, self.config.reward_config)
+            omsim_error = f"Could not parse solution: {e}"
+
+            struct = score_solution_structure(
+                solution_text, self._puzzle,
+                omsim_error=omsim_error,
+            )
+            reward = compute_reward(
+                False, tokens_used, rcfg,
+                structure_score=struct.score,
+                parseable=False,
+            )
             done = self._attempt >= self.config.max_attempts
             obs = format_feedback_observation(
-                self._puzzle,
-                f"Could not parse solution: {e}",
-                self._attempt,
-                self.config.max_attempts,
+                self._puzzle, omsim_error,
+                self._attempt, self.config.max_attempts,
             )
             return StepResult(
-                observation=obs,
-                reward=reward,
-                done=done,
-                info={**info, "error": "parse_error", "error_message": str(e)},
+                observation=obs, reward=reward, done=done,
+                info={
+                    **info, "error": "parse_error",
+                    "error_message": str(e),
+                    "structure_score": struct.score,
+                    "structure_level": struct.level,
+                    "structure_desc": struct.description,
+                },
             )
 
         # Try to verify with omsim
@@ -143,86 +140,104 @@ class OpusMagnumEnv:
                 self._puzzle.raw_bytes, sol_bytes, self.config.cycle_limit
             )
             self._solved = True
-            reward = compute_reward(True, True, tokens_used, self.config.reward_config)
+            omsim_verified = True
+
+            struct = score_solution_structure(
+                solution_text, self._puzzle, omsim_verified=True,
+            )
+            reward = compute_reward(True, tokens_used, rcfg, structure_score=1.0)
             return StepResult(
                 observation=f"Solution verified! Metrics: cost={metrics.cost}, "
                 f"cycles={metrics.cycles}, area={metrics.area}, "
                 f"instructions={metrics.instructions}",
-                reward=reward,
-                done=True,
+                reward=reward, done=True,
                 info={
-                    **info,
-                    "verified": True,
+                    **info, "verified": True,
+                    "structure_score": 1.0,
+                    "structure_level": 10,
                     "metrics": {
-                        "cost": metrics.cost,
-                        "cycles": metrics.cycles,
-                        "area": metrics.area,
-                        "instructions": metrics.instructions,
+                        "cost": metrics.cost, "cycles": metrics.cycles,
+                        "area": metrics.area, "instructions": metrics.instructions,
                     },
                 },
             )
         except VerificationError as e:
-            error_msg = str(e)
-            cycle = e.cycle
+            omsim_error = str(e)
+            omsim_error_cycle = e.cycle
             location = e.location
 
-            detail_parts = [error_msg]
-            if cycle >= 0:
-                detail_parts.append(f"Error at cycle {cycle}")
+            detail_parts = [omsim_error]
+            if omsim_error_cycle >= 0:
+                detail_parts.append(f"Error at cycle {omsim_error_cycle}")
             if location:
                 detail_parts.append(f"Error at hex ({location[0]}, {location[1]})")
 
-            # Compute intermediate progress score if enabled
+            struct = score_solution_structure(
+                solution_text, self._puzzle,
+                omsim_error=omsim_error,
+                omsim_error_cycle=omsim_error_cycle,
+            )
+
+            # Also compute legacy progress score if enabled
             progress = 0.0
-            if self.config.reward_config.use_intermediate_rewards:
+            if rcfg.use_intermediate_rewards:
                 try:
                     from om_rl.complexity.evaluator import evaluate_progress
                     progress_result = evaluate_progress(
                         self._puzzle, sol_bytes, max_trace_cycles=50
                     )
                     progress = progress_result.score
-                except Exception as prog_err:
-                    logger.debug(f"Progress evaluation failed: {prog_err}")
+                except Exception:
+                    pass
 
             reward = compute_reward(
-                False, True, tokens_used, self.config.reward_config,
+                False, tokens_used, rcfg,
+                structure_score=struct.score,
                 progress_score=progress,
+                parseable=True,
             )
             done = self._attempt >= self.config.max_attempts
             obs = format_feedback_observation(
-                self._puzzle,
-                "\n".join(detail_parts),
-                self._attempt,
-                self.config.max_attempts,
+                self._puzzle, "\n".join(detail_parts),
+                self._attempt, self.config.max_attempts,
             )
             return StepResult(
-                observation=obs,
-                reward=reward,
-                done=done,
+                observation=obs, reward=reward, done=done,
                 info={
-                    **info,
-                    "error": "verification_error",
-                    "error_message": error_msg,
-                    "error_cycle": cycle,
+                    **info, "error": "verification_error",
+                    "error_message": omsim_error,
+                    "error_cycle": omsim_error_cycle,
                     "error_location": location,
+                    "structure_score": struct.score,
+                    "structure_level": struct.level,
+                    "structure_desc": struct.description,
                     "progress_score": progress,
                 },
             )
         except Exception as e:
             logger.error(f"Unexpected verification error: {e}")
-            reward = compute_reward(False, True, tokens_used, self.config.reward_config)
+            struct = score_solution_structure(
+                solution_text, self._puzzle,
+                omsim_error=str(e),
+            )
+            reward = compute_reward(
+                False, tokens_used, rcfg,
+                structure_score=struct.score,
+                parseable=True,
+            )
             done = self._attempt >= self.config.max_attempts
             obs = format_feedback_observation(
-                self._puzzle,
-                f"Internal error during verification: {e}",
-                self._attempt,
-                self.config.max_attempts,
+                self._puzzle, f"Internal error during verification: {e}",
+                self._attempt, self.config.max_attempts,
             )
             return StepResult(
-                observation=obs,
-                reward=reward,
-                done=done,
-                info={**info, "error": "internal_error", "error_message": str(e)},
+                observation=obs, reward=reward, done=done,
+                info={
+                    **info, "error": "internal_error",
+                    "error_message": str(e),
+                    "structure_score": struct.score,
+                    "structure_level": struct.level,
+                },
             )
 
 
