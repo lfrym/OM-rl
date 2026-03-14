@@ -1,0 +1,27 @@
+[project]
+name = "om-rl"
+version = "0.1.0"
+description = "RL training pipeline for Opus Magnum puzzle solving"
+requires-python = ">=3.11"
+dependencies = [
+    "torch>=2.1",
+    "transformers>=4.40",
+    "trl>=0.8",
+    "peft>=0.10",
+    "datasets",
+    "pyyaml",
+    "networkx",
+]
+
+[project.optional-dependencies]
+dev = ["pytest", "ruff"]
+
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.backends._legacy:_Backend"
+
+[tool.setuptools.packages.find]
+include = ["om_rl*", "vendor*"]
+
+[tool.ruff]
+line-length = 100

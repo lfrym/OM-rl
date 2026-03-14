@@ -1,0 +1,49 @@
+# Default training configuration for Opus Magnum RL
+#
+# Usage: python scripts/train.py  (uses these defaults)
+# Override via CLI: python scripts/train.py --model Qwen/Qwen2.5-1.5B --max-steps 500
+
+model:
+  name: Qwen/Qwen2.5-3B
+  use_lora: true
+  lora_r: 16
+  lora_alpha: 32
+  load_in_4bit: true  # QLoRA for memory efficiency
+  max_new_tokens: 4096
+  temperature: 0.7
+
+training:
+  learning_rate: 5e-6
+  batch_size: 4          # puzzles per step
+  num_completions: 4     # K completions per puzzle (GRPO group size)
+  kl_coeff: 0.05
+  max_steps: 10000
+  gradient_accumulation_steps: 4
+  checkpoint_every: 500
+
+curriculum:
+  levels: [1, 2, 3, 4, 5]
+  advance_threshold: 0.3  # advance when solve rate >= 30%
+  generated_ratio: 0.7    # 70% generated, 30% campaign puzzles
+  puzzles_per_level: 100
+
+reward:
+  token_budget: 4096
+  correct_base: 1.0
+  parseable_wrong: -0.1
+  unparseable: -0.5
+
+environment:
+  max_attempts: 1      # single-shot for GRPO
+  cycle_limit: 100000
+
+paths:
+  output_dir: outputs
+  puzzle_dir: puzzles/campaign
+
+logging:
+  log_every: 10
+  eval_every: 100
+  eval_puzzles: 20
+
+seed: 42

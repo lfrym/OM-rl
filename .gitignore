@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+
+# Compiled libraries (rebuild with build_omsim.sh)
+lib/*.dylib
+lib/*.so
+lib/*.dll
+lib/*.wasm
+
+# Training outputs
+outputs/
+checkpoints/
+wandb/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Generated puzzles (large batches)
+puzzles/generated/
