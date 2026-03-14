@@ -7,7 +7,10 @@ echo "=== OM-rl Cloud Setup ==="
 
 # 1. Install Python dependencies
 echo "Installing Python dependencies..."
-pip install torch transformers trl peft bitsandbytes datasets pyyaml networkx accelerate
+# Pin versions to avoid incompatibilities between transformers/torch/bitsandbytes
+pip install "transformers>=4.45,<5" "trl>=0.12,<1" "peft>=0.13,<1" \
+    "bitsandbytes>=0.44,<0.45" "accelerate>=1.0,<2" \
+    datasets pyyaml networkx
 
 # 2. Build omsim shared library (Linux)
 echo "Building omsim..."

@@ -32,7 +32,7 @@ def setup_model_and_tokenizer(config: TrainingConfig):
         tokenizer.pad_token = tokenizer.eos_token
 
     model_kwargs: dict[str, Any] = {
-        "torch_dtype": torch.bfloat16,
+        "dtype": torch.bfloat16,
         "device_map": "auto",
     }
 
