@@ -15,6 +15,11 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest", "ruff"]
+# Self-managed GPU training (RunPod, Lambda, etc.)
+runpod = ["torch>=2.1", "transformers>=4.45,<5", "trl>=0.12,<1", "peft>=0.13,<1",
+          "bitsandbytes>=0.44,<0.45", "accelerate>=1.0,<2"]
+# Tinker RL-as-a-service
+tinker = ["tinker-cookbook"]
 
 [build-system]
 requires = ["setuptools>=68.0"]
