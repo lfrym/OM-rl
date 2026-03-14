@@ -65,6 +65,10 @@ def setup_model_and_tokenizer(config: TrainingConfig):
         model = get_peft_model(model, lora_config)
         model.print_trainable_parameters()
 
+    # Enable gradient checkpointing to reduce VRAM usage during training
+    model.gradient_checkpointing_enable()
+    logger.info("Gradient checkpointing enabled")
+
     return model, tokenizer
 
 
@@ -198,10 +202,11 @@ def train(config: TrainingConfig) -> None:
                 continue
 
             # Tokenize prompt + full trajectory
+            # Cap total sequence at 4096 to avoid OOM on training backward pass
+            max_train_seq = 4096
             full_text = episode.prompt + trajectory
             inputs = tokenizer(full_text, return_tensors="pt", truncation=True,
-                               max_length=2048 + config.model.max_new_tokens * config.max_attempts
-                               ).to(model.device)
+                               max_length=max_train_seq).to(model.device)
 
             prompt_ids = tokenizer(episode.prompt, return_tensors="pt",
                                    truncation=True, max_length=2048)["input_ids"]

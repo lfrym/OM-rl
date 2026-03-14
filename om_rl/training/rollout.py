@@ -202,6 +202,8 @@ def collect_rollouts(
             error_msg = step_result.info.get("error_message", "")
             progress = step_result.info.get("progress_score", "")
 
+            # Log generation details including a preview of what the model produced
+            preview = solution_text.replace('\n', ' ')[:120]
             logger.info(
                 f"  {puzzle.name} attempt {attempt+1}/{max_attempts}: "
                 f"{tokens_used} tok in {gen_elapsed:.1f}s ({tok_per_sec:.0f} tok/s) "
@@ -209,6 +211,7 @@ def collect_rollouts(
                 f"{f' err={error_msg[:60]}' if error_msg else ''}"
                 f"{f' progress={progress:.2f}' if isinstance(progress, float) and progress > 0 else ''}"
             )
+            logger.info(f"    preview: {preview}...")
 
             episode.turns.append(Turn(
                 generation=solution_text,
