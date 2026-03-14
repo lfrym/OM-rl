@@ -12,7 +12,7 @@ from om_rl.env.reward import RewardConfig
 class ModelConfig:
     """Model and LoRA configuration."""
 
-    model_name: str = "Qwen/Qwen2.5-3B"
+    model_name: str = "Qwen/Qwen2.5-1.5B-Instruct"
     use_lora: bool = True
     lora_r: int = 16
     lora_alpha: int = 32

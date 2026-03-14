@@ -16,7 +16,7 @@ from om_rl.training.trainer import train
 
 def main():
     parser = argparse.ArgumentParser(description="Train an RL model to solve Opus Magnum puzzles")
-    parser.add_argument("--model", default="Qwen/Qwen2.5-3B", help="Model name or path")
+    parser.add_argument("--model", default="Qwen/Qwen2.5-1.5B-Instruct", help="Model name or path")
     parser.add_argument("--output-dir", default="outputs", help="Output directory")
     parser.add_argument("--puzzle-dir", default="puzzles/campaign", help="Campaign puzzle directory")
     parser.add_argument("--max-steps", type=int, default=10000, help="Maximum training steps")
