@@ -55,10 +55,11 @@ class Config:
     eval_every: int = 10
     save_every: int = 25
 
-    # Puzzles
+    # Puzzles — defaults are small for cheap experimentation.
+    # Scale up: batch_size=32 group_size=8 for serious runs.
     level: int = 1
-    batch_size: int = 128
-    group_size: int = 16
+    batch_size: int = 4
+    group_size: int = 4
     num_puzzles: int = 1000
     seed: int = 42
     use_structure_scoring: bool = True
