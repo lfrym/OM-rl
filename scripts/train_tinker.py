@@ -66,7 +66,6 @@ class Config:
     num_puzzles: int = 1000
     seed: int = 42
     use_structure_scoring: bool = True
-    campaign_puzzle_dir: str = "puzzles/campaign"
 
     # Optional
     wandb_project: str | None = None
@@ -104,7 +103,6 @@ def main(config: Config) -> None:
         group_size=config.group_size,
         max_steps=config.max_steps,
         num_puzzles=config.num_puzzles,
-        campaign_puzzle_dir=config.campaign_puzzle_dir,
         seed=config.seed,
         use_structure_scoring=config.use_structure_scoring,
         model_name=config.model_name,

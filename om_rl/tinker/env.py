@@ -94,18 +94,13 @@ def _verify_with_omsim(
 def _build_puzzle_pool(
     complexity_level: int,
     num_puzzles: int,
-    campaign_puzzle_dir: str,
-    generated_ratio: float,
     seed: int,
 ) -> list[Puzzle]:
-    """Load/generate a puzzle pool."""
-    from vendor.opus_magnum.puzzle_parser import parse_puzzle as parse_puzzle_file
-
+    """Generate a training puzzle pool (no campaign puzzles — those are the test set)."""
     rng = random.Random(seed)
     puzzles: list[Puzzle] = []
 
-    num_generated = int(num_puzzles * generated_ratio)
-    for i in range(num_generated):
+    for i in range(num_puzzles):
         try:
             p = generate_puzzle(complexity_level=complexity_level, seed=seed + i)
             if validate_puzzle(p):
@@ -113,16 +108,8 @@ def _build_puzzle_pool(
         except Exception:
             pass
 
-    for f in sorted(glob.glob(f"{campaign_puzzle_dir}/*.puzzle")):
-        try:
-            p = parse_puzzle_file(f)
-            if not p.is_production:
-                puzzles.append(p)
-        except Exception:
-            pass
-
     rng.shuffle(puzzles)
-    logger.info(f"Puzzle pool: {len(puzzles)} puzzles (level={complexity_level})")
+    logger.info(f"Puzzle pool: {len(puzzles)} generated puzzles (level={complexity_level})")
     return puzzles
 
 
@@ -134,8 +121,6 @@ def make_tinker_dataset_builder(
     group_size: int = 16,
     max_steps: int = 100,
     num_puzzles: int = 1000,
-    campaign_puzzle_dir: str = "puzzles/campaign",
-    generated_ratio: float = 0.7,
     seed: int = 42,
     cycle_limit: int = 100_000,
     use_structure_scoring: bool = True,
@@ -170,8 +155,7 @@ def make_tinker_dataset_builder(
     puzzle_pools: dict[int, list[Puzzle]] = {}
     for lvl in range(complexity_level, max_level + 1):
         puzzle_pools[lvl] = _build_puzzle_pool(
-            lvl, num_puzzles, campaign_puzzle_dir,
-            generated_ratio, seed + lvl * 10000,
+            lvl, num_puzzles, seed + lvl * 10000,
         )
 
     # Define the ProblemEnv subclass
