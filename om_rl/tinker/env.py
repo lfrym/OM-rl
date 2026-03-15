@@ -175,27 +175,37 @@ def make_tinker_dataset_builder(
         def get_question(self) -> str:
             return _format_puzzle_prompt(self.puzzle)
 
-        def check_answer(self, response: str) -> float:
-            verified, error, error_cycle = _verify_with_omsim(
-                response, self.puzzle, self._cycle_limit
-            )
-            if verified:
-                return 1.0
-            if self._use_structure_scoring:
-                struct = score_solution_structure(
-                    response, self.puzzle,
-                    omsim_error=error,
-                    omsim_error_cycle=error_cycle,
+        def _score(self, response: str) -> tuple[float, int]:
+            """Score a response. Returns (score, level).
+            Cached per step since check_format and check_answer
+            are called on the same response."""
+            if not hasattr(self, '_cached_response') or self._cached_response != response:
+                verified, error, error_cycle = _verify_with_omsim(
+                    response, self.puzzle, self._cycle_limit
                 )
-                return struct.score
-            return 0.0
+                if verified:
+                    self._cached_score = (1.0, 10)
+                elif self._use_structure_scoring:
+                    struct = score_solution_structure(
+                        response, self.puzzle,
+                        omsim_error=error,
+                        omsim_error_cycle=error_cycle,
+                    )
+                    self._cached_score = (struct.score, struct.level)
+                else:
+                    self._cached_score = (1.0 if verified else 0.0, 10 if verified else 0)
+                self._cached_response = response
+            return self._cached_score
+
+        def check_answer(self, response: str) -> float:
+            score, level = self._score(response)
+            return score
 
         def check_format(self, response: str) -> bool:
-            lines = response.strip().split("\n")
-            has_input = any(l.strip().startswith("INPUT ") for l in lines)
-            has_output = any(l.strip().startswith("OUTPUT ") for l in lines)
-            has_arm = any(l.strip().startswith("ARM ") for l in lines)
-            return has_input and has_output and has_arm
+            # Format is "correct" if structure scorer reaches L4+
+            # (has INPUT, OUTPUT, correct counts, and ARM with TAPE)
+            _, level = self._score(response)
+            return level >= 4
 
         def get_reference_answer(self) -> str:
             return REFERENCE_SOLUTION
