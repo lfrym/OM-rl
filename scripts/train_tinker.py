@@ -66,7 +66,7 @@ class Config:
     temperature: float = 0.7
     kl_penalty_coef: float = 0.1
     eval_every: int = 10
-    save_every: int = 25
+    save_every: int = 5
 
     # Puzzles
     level: int = 1
