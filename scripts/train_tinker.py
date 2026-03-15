@@ -58,6 +58,8 @@ class Config:
     # Puzzles — defaults are small for cheap experimentation.
     # Scale up: batch_size=32 group_size=8 for serious runs.
     level: int = 1
+    max_level: int = 1  # Set >level for curriculum (e.g., level=1 max_level=3)
+    curriculum_step_interval: int = 10  # Steps between level increases
     batch_size: int = 4
     group_size: int = 4
     num_puzzles: int = 1000
@@ -73,7 +75,8 @@ class Config:
 def main(config: Config) -> None:
     logger.info(f"Starting Tinker training:")
     logger.info(f"  Model: {config.model_name}")
-    logger.info(f"  Puzzle level: {config.level}")
+    logger.info(f"  Puzzle levels: {config.level}-{config.max_level} "
+                f"(advance every {config.curriculum_step_interval} steps)")
     logger.info(f"  Batch: {config.batch_size}, Group: {config.group_size}")
     logger.info(f"  Max tokens: {config.max_tokens}")
     logger.info(f"  Structure scoring: {config.use_structure_scoring}")
@@ -94,6 +97,8 @@ def main(config: Config) -> None:
 
     dataset_builder = make_tinker_dataset_builder(
         complexity_level=config.level,
+        max_level=config.max_level,
+        curriculum_step_interval=config.curriculum_step_interval,
         batch_size=config.batch_size,
         group_size=config.group_size,
         num_puzzles=config.num_puzzles,

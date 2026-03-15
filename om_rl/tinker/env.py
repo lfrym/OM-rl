@@ -128,6 +128,8 @@ def _build_puzzle_pool(
 
 def make_tinker_dataset_builder(
     complexity_level: int = 1,
+    max_level: int | None = None,
+    curriculum_step_interval: int = 10,
     batch_size: int = 128,
     group_size: int = 16,
     num_puzzles: int = 1000,
@@ -141,6 +143,17 @@ def make_tinker_dataset_builder(
 ):
     """Build a Tinker RLDatasetBuilder for Opus Magnum.
 
+    Args:
+        complexity_level: Starting puzzle level (1-5).
+        max_level: Maximum level for curriculum. If None, stays at complexity_level.
+            If set, puzzles ramp from complexity_level to max_level over training.
+        curriculum_step_interval: Steps between level increases.
+            E.g., interval=10 means level increases every 10 steps.
+            At each step, the mix is weighted toward the current curriculum level
+            with some easier puzzles mixed in for reinforcement.
+        batch_size: Puzzles per step.
+        group_size: Completions per puzzle (K for GRPO).
+
     Returns an instance compatible with train.Config.dataset_builder.
     """
     from tinker_cookbook import renderers
@@ -149,11 +162,16 @@ def make_tinker_dataset_builder(
     from tinker_cookbook.tokenizer_utils import get_tokenizer
     import chz
 
-    # Pre-generate puzzle pool
-    puzzles = _build_puzzle_pool(
-        complexity_level, num_puzzles, campaign_puzzle_dir,
-        generated_ratio, seed,
-    )
+    if max_level is None:
+        max_level = complexity_level
+
+    # Pre-generate puzzle pools for each level
+    puzzle_pools: dict[int, list[Puzzle]] = {}
+    for lvl in range(complexity_level, max_level + 1):
+        puzzle_pools[lvl] = _build_puzzle_pool(
+            lvl, num_puzzles, campaign_puzzle_dir,
+            generated_ratio, seed + lvl * 10000,
+        )
 
     # Define the ProblemEnv subclass
     class OpusMagnumEnv(ProblemEnv):
@@ -202,10 +220,39 @@ def make_tinker_dataset_builder(
         def __init__(self, renderer: renderers.Renderer):
             self.renderer = renderer
 
+        def _get_curriculum_level(self, step: int) -> int:
+            """Determine current max curriculum level based on step."""
+            levels_unlocked = step // curriculum_step_interval
+            return min(complexity_level + levels_unlocked, max_level)
+
+        def _pick_puzzle(self, step: int, idx: int) -> Puzzle:
+            """Pick a puzzle with curriculum-weighted level selection.
+
+            At each step, we sample from all unlocked levels with a
+            distribution weighted toward the current (hardest unlocked)
+            level: 50% current level, 50% uniform across all unlocked.
+            """
+            current_max = self._get_curriculum_level(step)
+            rng = random.Random(seed + step * 1000 + idx)
+
+            if rng.random() < 0.5 or current_max == complexity_level:
+                # Sample from current (hardest unlocked) level
+                lvl = current_max
+            else:
+                # Sample uniformly from all unlocked levels
+                lvl = rng.randint(complexity_level, current_max)
+
+            pool = puzzle_pools[lvl]
+            return pool[(step * batch_size + idx) % len(pool)]
+
         def get_batch(self, index: int) -> Sequence[EnvGroupBuilder]:
             batch = []
+            current_lvl = self._get_curriculum_level(index)
+            if index % 5 == 0:  # Log curriculum level every 5 steps
+                logger.info(f"  Curriculum: step {index}, max_level={current_lvl}")
+
             for i in range(batch_size):
-                puzzle = puzzles[(index * batch_size + i) % len(puzzles)]
+                puzzle = self._pick_puzzle(index, i)
 
                 def make_env(p=puzzle, r=self.renderer):
                     return OpusMagnumEnv(puzzle=p, renderer=r)
@@ -217,7 +264,8 @@ def make_tinker_dataset_builder(
             return batch
 
         def __len__(self) -> int:
-            return math.ceil(len(puzzles) / batch_size)
+            total = sum(len(p) for p in puzzle_pools.values())
+            return math.ceil(total / batch_size)
 
     # Define the DatasetBuilder
     @chz.chz
