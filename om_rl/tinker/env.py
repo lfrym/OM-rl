@@ -34,14 +34,14 @@ from om_rl.puzzle_gen.validator import validate_puzzle
 
 logger = logging.getLogger(__name__)
 
-# Verified reference solution for logging
+# Reference solution for logging (calcification example, vertical layout)
 REFERENCE_SOLUTION = """\
-INPUT pos=(-2,0) rot=0 idx=0
-OUTPUT pos=(2,0) rot=0 idx=0
+INPUT pos=(0,2) rot=0 idx=0
+OUTPUT pos=(0,-2) rot=0 idx=0
 GLYPH glyph-calcification pos=(0,0) rot=0
-ARM arm1 pos=(-1,0) rot=3 ext=1 id=0
+ARM arm1 pos=(0,1) rot=1 ext=1 id=0
   TAPE: 1:G 2:R 3:R 4:R 5:g 6:R 7:R 8:R 9:C
-ARM arm1 pos=(1,0) rot=3 ext=1 id=1
+ARM arm1 pos=(0,-1) rot=1 ext=1 id=1
   TAPE: 7:G 8:R 9:R 10:R 11:g 12:R 13:R 14:R 15:C"""
 
 

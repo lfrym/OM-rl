@@ -61,12 +61,12 @@ class Config:
     # Training
     learning_rate: float = 4e-5
     max_tokens: int = 8192
-    max_steps: int = 20
+    max_steps: int = 30
     lora_rank: int = 32
     temperature: float = 0.7
     kl_penalty_coef: float = 0.1
     eval_every: int = 10
-    save_every: int = 5
+    save_every: int = 10
 
     # Puzzles
     level: int = 1

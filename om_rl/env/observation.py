@@ -52,26 +52,40 @@ Instructions: G=grab g=drop R=rotateCW r=rotateCCW E=extend e=retract P=pivotCW 
 
 
 FEW_SHOT_EXAMPLES = """\
-WORKED EXAMPLE — Converting Air to Salt using glyph-calcification:
+WORKED EXAMPLE 1 — Simple pass-through (move Water from input to output):
 
-Puzzle: 1 input (Air), 1 output (Salt). The glyph-calcification converts any cardinal element to salt.
-Layout: input at (-2,0), GLYPH glyph-calcification at (0,0), output at (2,0).
+Puzzle: 1 input (Water), 1 output (Water). No glyph needed, just transport.
+One arm at (0,0) with ext=2 reaches input at (0,2) and output at (0,-2).
+Gripper calculation: arm at (0,0) rot=1(SE) ext=2 -> gripper at (0,2)=input.
+After 3x R (rot 1->2->3->4=NW), gripper at (0,-2)=output.
+
+INPUT pos=(0,2) rot=0 idx=0
+OUTPUT pos=(0,-2) rot=0 idx=0
+ARM arm1 pos=(0,0) rot=1 ext=2 id=0
+  TAPE: 1:G 2:R 3:R 4:R 5:g 6:R 7:R 8:R 9:C
+
+WORKED EXAMPLE 2 — Converting Fire to Salt using glyph-calcification:
+
+Puzzle: 1 input (Fire), 1 output (Salt). Requires glyph-calcification (converts cardinal->salt).
+Vertical layout: input at (0,2), glyph at (0,0), output at (0,-2).
 Two arms shuttle atoms: arm 0 moves input->glyph, arm 1 moves glyph->output.
 
-INPUT pos=(-2,0) rot=0 idx=0
-OUTPUT pos=(2,0) rot=0 idx=0
+INPUT pos=(0,2) rot=0 idx=0
+OUTPUT pos=(0,-2) rot=0 idx=0
 GLYPH glyph-calcification pos=(0,0) rot=0
-ARM arm1 pos=(-1,0) rot=3 ext=1 id=0
+ARM arm1 pos=(0,1) rot=1 ext=1 id=0
   TAPE: 1:G 2:R 3:R 4:R 5:g 6:R 7:R 8:R 9:C
-ARM arm1 pos=(1,0) rot=3 ext=1 id=1
+ARM arm1 pos=(0,-1) rot=1 ext=1 id=1
   TAPE: 7:G 8:R 9:R 10:R 11:g 12:R 13:R 14:R 15:C
 
-How this works:
-- Arm at (-1,0) rot=3 ext=1: gripper starts at (-2,0)=input. G grabs atom. 3x R rotates to (0,0)=glyph. g drops. 3x R returns to input. C repeats.
-- Arm at (1,0) rot=3 ext=1: gripper starts at (0,0)=glyph. Waits until cycle 7 for calcification. G grabs salt. 3x R rotates to (2,0)=output. g drops. C repeats.
-- IMPORTANT: The GLYPH line is required! Without it, atoms won't be transformed.
-- IMPORTANT: Use exact glyph type names from the list above (e.g. glyph-calcification, NOT glyph-calculator).
+Key patterns:
+- Compute gripper position: base + HEX_DIRECTIONS[rot % 6] * extension.
+  HEX_DIRECTIONS: 0=E(+1,0), 1=SE(0,+1), 2=SW(-1,+1), 3=W(-1,0), 4=NW(0,-1), 5=NE(+1,-1)
+- 3x R (rotate CW) moves the gripper 180° around the arm base.
+- G=grab, g=drop (lowercase!), C=repeat from start of tape.
+- Include a GLYPH line when atoms need transformation. Use exact names: glyph-calcification, glyph-projection, etc.
 - Arm type is "arm1" (not "ARM 1" or just "1").
+- Every puzzle is different — adapt positions and layout to the specific inputs/outputs required.
 """
 
 
