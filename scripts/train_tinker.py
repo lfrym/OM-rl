@@ -103,6 +103,7 @@ def main(config: Config) -> None:
         "qwen3": "qwen3",
         "llama": "llama3",
         "deepseek": "deepseekv3",
+        "gpt-oss": "gpt_oss_no_sysprompt",
     }
     renderer_name = "qwen3"  # default
     for key, name in renderer_map.items():
