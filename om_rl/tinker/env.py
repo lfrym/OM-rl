@@ -226,36 +226,60 @@ def make_tinker_dataset_builder(
         def __init__(self, renderer: renderers.Renderer):
             self.renderer = renderer
 
-        def _get_curriculum_level(self, step: int) -> int:
-            """Determine current max curriculum level based on step."""
-            levels_unlocked = step // curriculum_step_interval
-            return min(complexity_level + levels_unlocked, max_level)
+        def _get_curriculum_window(self, step: int) -> tuple[int, int]:
+            """Determine the active level window based on step.
+
+            Returns (min_level, max_level) for this step. The window
+            slides upward over training:
+              Steps 0-4:  L1 only
+              Steps 5-9:  L1-L2
+              Steps 10-14: L2 only
+              Steps 15-19: L2-L3
+              Steps 20-24: L3 only
+              ...
+
+            Each interval introduces the next level, then the previous
+            level is phased out.
+            """
+            phase = step // curriculum_step_interval
+            # Even phases = single level, odd phases = transition (two levels)
+            # Phase 0: L1 only, Phase 1: L1+L2, Phase 2: L2 only, Phase 3: L2+L3, ...
+            base = complexity_level + phase // 2
+            if phase % 2 == 0:
+                # Single level phase
+                lvl = min(base, max_level)
+                return (lvl, lvl)
+            else:
+                # Transition phase: current + next
+                lo = min(base, max_level)
+                hi = min(base + 1, max_level)
+                return (lo, hi)
 
         def _pick_puzzle(self, step: int, idx: int) -> Puzzle:
-            """Pick a puzzle with curriculum-weighted level selection.
+            """Pick a puzzle from the current curriculum window.
 
-            At each step, we sample from all unlocked levels with a
-            distribution weighted toward the current (hardest unlocked)
-            level: 50% current level, 50% uniform across all unlocked.
+            During single-level phases, all puzzles are from that level.
+            During transition phases, 50/50 split between the two levels.
             """
-            current_max = self._get_curriculum_level(step)
+            lo, hi = self._get_curriculum_window(step)
             rng = random.Random(seed + step * 1000 + idx)
 
-            if rng.random() < 0.5 or current_max == complexity_level:
-                # Sample from current (hardest unlocked) level
-                lvl = current_max
+            if lo == hi:
+                lvl = lo
             else:
-                # Sample uniformly from all unlocked levels
-                lvl = rng.randint(complexity_level, current_max)
+                lvl = lo if rng.random() < 0.5 else hi
 
             pool = puzzle_pools[lvl]
             return pool[(step * batch_size + idx) % len(pool)]
 
         def get_batch(self, index: int) -> Sequence[EnvGroupBuilder]:
             batch = []
-            current_lvl = self._get_curriculum_level(index)
-            if index % 5 == 0:  # Log curriculum level every 5 steps
-                logger.info(f"  Curriculum: step {index}, max_level={current_lvl}")
+            lo, hi = self._get_curriculum_window(index)
+            if index % curriculum_step_interval == 0:
+                if lo == hi:
+                    logger.info(f"  Curriculum: step {index}, level L{lo}")
+                else:
+                    logger.info(f"  Curriculum: step {index}, levels L{lo}-L{hi} (transition)")
 
             for i in range(batch_size):
                 puzzle = self._pick_puzzle(index, i)
