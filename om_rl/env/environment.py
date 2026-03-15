@@ -114,7 +114,7 @@ class OpusMagnumEnv:
             )
             reward = compute_reward(
                 False, tokens_used, rcfg,
-                structure_score=struct.score,
+                structure_score=struct.score if struct.level >= 8 else 0.0,
                 parseable=False,
             )
             done = self._attempt >= self.config.max_attempts
@@ -192,7 +192,7 @@ class OpusMagnumEnv:
 
             reward = compute_reward(
                 False, tokens_used, rcfg,
-                structure_score=struct.score,
+                structure_score=struct.score if struct.level >= 8 else 0.0,
                 progress_score=progress,
                 parseable=True,
             )
@@ -222,7 +222,7 @@ class OpusMagnumEnv:
             )
             reward = compute_reward(
                 False, tokens_used, rcfg,
-                structure_score=struct.score,
+                structure_score=struct.score if struct.level >= 8 else 0.0,
                 parseable=True,
             )
             done = self._attempt >= self.config.max_attempts

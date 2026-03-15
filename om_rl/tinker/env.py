@@ -177,8 +177,14 @@ def make_tinker_dataset_builder(
 
         def _score(self, response: str) -> tuple[float, int]:
             """Score a response. Returns (score, level).
+
+            Only gives partial credit for L8+ (omsim actually simulated).
+            L0-L7 all map to 0.0 — we don't reward "looks correct",
+            only "runs correctly" or "almost runs correctly".
+
             Cached per step since check_format and check_answer
-            are called on the same response."""
+            are called on the same response.
+            """
             if not hasattr(self, '_cached_response') or self._cached_response != response:
                 verified, error, error_cycle = _verify_with_omsim(
                     response, self.puzzle, self._cycle_limit
@@ -191,9 +197,14 @@ def make_tinker_dataset_builder(
                         omsim_error=error,
                         omsim_error_cycle=error_cycle,
                     )
-                    self._cached_score = (struct.score, struct.level)
+                    # Only give credit for L8+ (omsim loaded and simulated)
+                    # L0-L7 get 0.0 — no reward for formatted-but-wrong
+                    if struct.level >= 8:
+                        self._cached_score = (struct.score, struct.level)
+                    else:
+                        self._cached_score = (0.0, struct.level)
                 else:
-                    self._cached_score = (1.0 if verified else 0.0, 10 if verified else 0)
+                    self._cached_score = (0.0, 0)
                 self._cached_response = response
             return self._cached_score
 
