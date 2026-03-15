@@ -60,7 +60,7 @@ class Config:
 
     # Training
     learning_rate: float = 4e-5
-    max_tokens: int = 4096
+    max_tokens: int = 8192
     max_steps: int = 20
     lora_rank: int = 32
     temperature: float = 0.7
@@ -78,9 +78,10 @@ class Config:
     seed: int = 42
     use_structure_scoring: bool = True
 
-    # Logging
+    # Logging & overrides
     wandb_project: str | None = "om-rl"
     base_url: str | None = None
+    renderer_name: str | None = None  # Auto-detected from model_name if None
 
 
 def main(config: Config) -> None:
@@ -98,18 +99,21 @@ def main(config: Config) -> None:
 
     from om_rl.tinker.env import make_tinker_dataset_builder
 
-    # Map model names to renderer names
-    renderer_map = {
-        "qwen3": "qwen3",
-        "llama": "llama3",
-        "deepseek": "deepseekv3",
-        "gpt-oss": "gpt_oss_no_sysprompt",
-    }
-    renderer_name = "qwen3"  # default
-    for key, name in renderer_map.items():
-        if key in config.model_name.lower():
-            renderer_name = name
-            break
+    # Determine renderer
+    if config.renderer_name:
+        renderer_name = config.renderer_name
+    else:
+        renderer_map = {
+            "qwen3": "qwen3",
+            "llama": "llama3",
+            "deepseek": "deepseekv3",
+            "gpt-oss": "gpt_oss_no_sysprompt",
+        }
+        renderer_name = "qwen3"  # default
+        for key, name in renderer_map.items():
+            if key in config.model_name.lower():
+                renderer_name = name
+                break
 
     dataset_builder = make_tinker_dataset_builder(
         complexity_level=config.level,
