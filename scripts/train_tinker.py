@@ -52,6 +52,7 @@ class Config:
     max_steps: int = 20
     lora_rank: int = 32
     temperature: float = 0.7
+    kl_penalty_coef: float = 0.1  # Prevent policy collapse / reward hacking
     log_path: str = "/tmp/om-rl-tinker"
     eval_every: int = 10
     save_every: int = 25
@@ -116,6 +117,7 @@ def main(config: Config) -> None:
         max_tokens=config.max_tokens,
         lora_rank=config.lora_rank,
         temperature=config.temperature,
+        kl_penalty_coef=config.kl_penalty_coef,
         log_path=config.log_path,
         eval_every=config.eval_every,
         save_every=config.save_every,
