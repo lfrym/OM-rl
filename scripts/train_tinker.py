@@ -9,13 +9,14 @@ Requirements:
 
 Usage:
     python scripts/train_tinker.py
-    python scripts/train_tinker.py model_name=Qwen/Qwen3-4B level=2
+    python scripts/train_tinker.py model_name=Qwen/Qwen3-4B-Instruct-2507 level=2
     python scripts/train_tinker.py use_structure_scoring=false  # ablation
 """
 
 import asyncio
 import logging
 import sys
+import time
 from pathlib import Path
 
 project_root = Path(__file__).resolve().parent.parent
@@ -39,48 +40,61 @@ logging.basicConfig(
 logger = logging.getLogger("train_tinker")
 
 
+def _next_log_path(base: str = "outputs/tinker") -> str:
+    """Find the next available run directory (run_001, run_002, ...)."""
+    base_path = Path(base)
+    base_path.mkdir(parents=True, exist_ok=True)
+    for i in range(1, 10000):
+        candidate = base_path / f"run_{i:03d}"
+        if not candidate.exists():
+            return str(candidate)
+    return str(base_path / f"run_{int(time.time())}")
+
+
 @chz.chz
 class Config:
     """Opus Magnum RL training config for Tinker."""
 
     # Model
-    model_name: str = "Qwen/Qwen3.5-4B"
+    model_name: str = "Qwen/Qwen3-4B-Instruct-2507"
 
     # Training
     learning_rate: float = 4e-5
-    max_tokens: int = 1024
+    max_tokens: int = 4096
     max_steps: int = 20
     lora_rank: int = 32
     temperature: float = 0.7
-    kl_penalty_coef: float = 0.1  # Prevent policy collapse / reward hacking
-    log_path: str = "/tmp/om-rl-tinker"
+    kl_penalty_coef: float = 0.1
     eval_every: int = 10
     save_every: int = 25
 
-    # Puzzles — defaults are small for cheap experimentation.
-    # Scale up: batch_size=32 group_size=8 for serious runs.
+    # Puzzles
     level: int = 1
-    max_level: int = 1  # Set >level for curriculum (e.g., level=1 max_level=3)
-    curriculum_step_interval: int = 10  # Steps between level increases
-    batch_size: int = 4
-    group_size: int = 4
+    max_level: int = 3
+    curriculum_step_interval: int = 5
+    batch_size: int = 8
+    group_size: int = 8
     num_puzzles: int = 1000
     seed: int = 42
     use_structure_scoring: bool = True
 
-    # Optional
-    wandb_project: str | None = None
+    # Logging
+    wandb_project: str | None = "om-rl"
     base_url: str | None = None
 
 
 def main(config: Config) -> None:
+    log_path = _next_log_path()
+
     logger.info(f"Starting Tinker training:")
     logger.info(f"  Model: {config.model_name}")
     logger.info(f"  Puzzle levels: {config.level}-{config.max_level} "
                 f"(advance every {config.curriculum_step_interval} steps)")
     logger.info(f"  Batch: {config.batch_size}, Group: {config.group_size}")
-    logger.info(f"  Max tokens: {config.max_tokens}")
+    logger.info(f"  Max tokens: {config.max_tokens}, Max steps: {config.max_steps}")
+    logger.info(f"  KL penalty: {config.kl_penalty_coef}")
     logger.info(f"  Structure scoring: {config.use_structure_scoring}")
+    logger.info(f"  Log path: {log_path}")
 
     from om_rl.tinker.env import make_tinker_dataset_builder
 
@@ -118,7 +132,7 @@ def main(config: Config) -> None:
         lora_rank=config.lora_rank,
         temperature=config.temperature,
         kl_penalty_coef=config.kl_penalty_coef,
-        log_path=config.log_path,
+        log_path=log_path,
         eval_every=config.eval_every,
         save_every=config.save_every,
         wandb_project=config.wandb_project,
