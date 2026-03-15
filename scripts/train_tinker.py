@@ -49,6 +49,7 @@ class Config:
     # Training
     learning_rate: float = 4e-5
     max_tokens: int = 1024
+    max_steps: int = 20
     lora_rank: int = 32
     temperature: float = 0.7
     log_path: str = "/tmp/om-rl-tinker"
@@ -101,6 +102,7 @@ def main(config: Config) -> None:
         curriculum_step_interval=config.curriculum_step_interval,
         batch_size=config.batch_size,
         group_size=config.group_size,
+        max_steps=config.max_steps,
         num_puzzles=config.num_puzzles,
         campaign_puzzle_dir=config.campaign_puzzle_dir,
         seed=config.seed,

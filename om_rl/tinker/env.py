@@ -132,6 +132,7 @@ def make_tinker_dataset_builder(
     curriculum_step_interval: int = 10,
     batch_size: int = 128,
     group_size: int = 16,
+    max_steps: int = 100,
     num_puzzles: int = 1000,
     campaign_puzzle_dir: str = "puzzles/campaign",
     generated_ratio: float = 0.7,
@@ -264,8 +265,7 @@ def make_tinker_dataset_builder(
             return batch
 
         def __len__(self) -> int:
-            total = sum(len(p) for p in puzzle_pools.values())
-            return math.ceil(total / batch_size)
+            return max_steps
 
     # Define the DatasetBuilder
     @chz.chz
