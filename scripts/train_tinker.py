@@ -44,7 +44,7 @@ class Config:
     """Opus Magnum RL training config for Tinker."""
 
     # Model
-    model_name: str = "Qwen/Qwen3-4B"
+    model_name: str = "Qwen/Qwen3.5-4B"
 
     # Training
     learning_rate: float = 4e-5
