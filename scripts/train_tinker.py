@@ -8,14 +8,9 @@ Requirements:
     pip install tinker-cookbook
 
 Usage:
-    # Basic run (Qwen3-4B, Level 1 puzzles)
     python scripts/train_tinker.py
-
-    # Custom model and settings
-    python scripts/train_tinker.py --model Qwen/Qwen3-4B --level 2
-
-    # Pass additional Tinker config via chz CLI syntax
-    python scripts/train_tinker.py --max_tokens 1024 --learning_rate 4e-5
+    python scripts/train_tinker.py model_name=Qwen/Qwen3-4B level=2
+    python scripts/train_tinker.py use_structure_scoring=false  # ablation
 """
 
 import asyncio
@@ -36,8 +31,6 @@ except ImportError:
     print("For self-managed GPU training, use: python scripts/train.py")
     sys.exit(1)
 
-from om_rl.tinker.env import OpusMagnumDatasetBuilder
-
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(name)s %(levelname)s %(message)s",
@@ -50,45 +43,64 @@ logger = logging.getLogger("train_tinker")
 class Config:
     """Opus Magnum RL training config for Tinker."""
 
-    # Tinker training settings
+    # Model
     model_name: str = "Qwen/Qwen3-4B"
+
+    # Training
     learning_rate: float = 4e-5
     max_tokens: int = 1024
     lora_rank: int = 32
     temperature: float = 0.7
     log_path: str = "/tmp/om-rl-tinker"
-    max_steps: int = 100
     eval_every: int = 10
     save_every: int = 25
-    wandb_project: str | None = None
-    wandb_name: str | None = None
-    base_url: str | None = None
 
-    # Puzzle settings
+    # Puzzles
     level: int = 1
     batch_size: int = 128
     group_size: int = 16
     num_puzzles: int = 1000
     seed: int = 42
     use_structure_scoring: bool = True
+    campaign_puzzle_dir: str = "puzzles/campaign"
+
+    # Optional
+    wandb_project: str | None = None
+    base_url: str | None = None
 
 
-async def main(config: Config) -> None:
+def main(config: Config) -> None:
     logger.info(f"Starting Tinker training:")
     logger.info(f"  Model: {config.model_name}")
     logger.info(f"  Puzzle level: {config.level}")
-    logger.info(f"  Batch size: {config.batch_size}, Group size: {config.group_size}")
+    logger.info(f"  Batch: {config.batch_size}, Group: {config.group_size}")
     logger.info(f"  Max tokens: {config.max_tokens}")
     logger.info(f"  Structure scoring: {config.use_structure_scoring}")
-    logger.info(f"  Log dir: {config.log_path}")
 
-    dataset_builder = OpusMagnumDatasetBuilder(
+    from om_rl.tinker.env import make_tinker_dataset_builder
+
+    # Map model names to renderer names
+    renderer_map = {
+        "qwen3": "qwen3",
+        "llama": "llama3",
+        "deepseek": "deepseekv3",
+    }
+    renderer_name = "qwen3"  # default
+    for key, name in renderer_map.items():
+        if key in config.model_name.lower():
+            renderer_name = name
+            break
+
+    dataset_builder = make_tinker_dataset_builder(
         complexity_level=config.level,
         batch_size=config.batch_size,
         group_size=config.group_size,
         num_puzzles=config.num_puzzles,
+        campaign_puzzle_dir=config.campaign_puzzle_dir,
         seed=config.seed,
         use_structure_scoring=config.use_structure_scoring,
+        model_name=config.model_name,
+        renderer_name=renderer_name,
     )
 
     train_config = train.Config(
@@ -99,16 +111,14 @@ async def main(config: Config) -> None:
         lora_rank=config.lora_rank,
         temperature=config.temperature,
         log_path=config.log_path,
-        max_steps=config.max_steps,
         eval_every=config.eval_every,
         save_every=config.save_every,
         wandb_project=config.wandb_project,
-        wandb_name=config.wandb_name,
         base_url=config.base_url,
         remove_constant_reward_groups=True,
     )
 
-    await train.main(train_config)
+    asyncio.run(train.main(train_config))
 
 
 if __name__ == "__main__":

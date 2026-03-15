@@ -1,22 +1,22 @@
 """Tinker-compatible environment for Opus Magnum RL.
 
 Adapts our puzzle generator, omsim verifier, and structure scorer
-into Tinker's ProblemEnv interface. This lets us train via Tinker's
-infrastructure while reusing all our existing puzzle/verification logic.
+into Tinker's ProblemEnv interface.
 
-Tinker's ProblemEnv expects:
-  - get_question() -> str: the puzzle prompt
-  - check_answer(response: str) -> bool: did the model solve it?
-  - check_format(response: str) -> bool: is the response well-formed?
-  - get_reference_answer() -> str: a known-good answer for logging
+Tinker's ProblemEnv.step() computes reward as:
+  format_coef * (check_format - 1) + check_answer
 
-We extend this with our structure scorer for richer reward signal.
+So if check_answer returns a float (structure score 0-1), the reward
+is smooth. If check_format returns 0, there's a format penalty.
 """
 
 from __future__ import annotations
 
+import glob
 import logging
-from typing import Any
+import math
+import random
+from typing import Literal, Sequence
 
 from vendor.opus_magnum.models import Puzzle
 from vendor.opus_magnum.text_format import parse_text_solution
@@ -28,14 +28,13 @@ from om_rl.env.observation import (
     SOLUTION_FORMAT,
     FEW_SHOT_EXAMPLES,
 )
-from om_rl.env.reward import RewardConfig
 from om_rl.complexity.structure_scorer import score_solution_structure
 from om_rl.puzzle_gen.generator import generate_puzzle
 from om_rl.puzzle_gen.validator import validate_puzzle
 
 logger = logging.getLogger(__name__)
 
-# The reference solution we use for logging (verified correct for seed=1)
+# Verified reference solution for logging
 REFERENCE_SOLUTION = """\
 INPUT pos=(-2,0) rot=0 idx=0
 OUTPUT pos=(2,0) rot=0 idx=0
@@ -47,14 +46,10 @@ ARM arm1 pos=(1,0) rot=3 ext=1 id=1
 
 
 def _format_puzzle_prompt(puzzle: Puzzle) -> str:
-    """Format a puzzle as a prompt string (without system-level framing).
-
-    Tinker's ProblemEnv wraps this in its own conversation format.
-    """
+    """Format a puzzle as a prompt string."""
     from vendor.opus_magnum.text_format import puzzle_to_text
 
     puzzle_text = puzzle_to_text(puzzle)
-
     num_inputs = len(puzzle.inputs)
     num_outputs = len(puzzle.outputs)
     input_indices = ", ".join(str(i) for i in range(num_inputs))
@@ -70,222 +65,169 @@ def _format_puzzle_prompt(puzzle: Puzzle) -> str:
 
     return (
         f"Solve this Opus Magnum puzzle. Output a complete solution.\n\n"
-        f"{GAME_REFERENCE}\n"
-        f"{SOLUTION_FORMAT}\n"
-        f"{FEW_SHOT_EXAMPLES}\n"
-        f"{puzzle_text}\n"
-        f"{io_text}\n"
+        f"{GAME_REFERENCE}\n{SOLUTION_FORMAT}\n{FEW_SHOT_EXAMPLES}\n"
+        f"{puzzle_text}\n{io_text}\n"
         f"Output ONLY the solution — no explanation needed."
     )
 
 
 def _verify_with_omsim(
-    solution_text: str,
-    puzzle: Puzzle,
-    cycle_limit: int = 100_000,
-) -> tuple[bool, str | None, int, dict[str, int] | None]:
-    """Try to parse and verify a solution.
-
-    Returns: (verified, error_message, error_cycle, metrics_dict)
-    """
+    solution_text: str, puzzle: Puzzle, cycle_limit: int = 100_000,
+) -> tuple[bool, str | None, int]:
+    """Parse and verify a solution. Returns (verified, error, error_cycle)."""
     try:
         solution = parse_text_solution(solution_text, puzzle.name)
     except Exception as e:
-        return False, f"Parse error: {e}", -1, None
+        return False, f"Parse error: {e}", -1
 
     try:
         sol_bytes = write_solution(solution)
         with Verifier(puzzle.raw_bytes, sol_bytes, cycle_limit) as v:
-            metrics = v.evaluate()
-        return True, None, -1, {
-            "cost": metrics.cost,
-            "cycles": metrics.cycles,
-            "area": metrics.area,
-            "instructions": metrics.instructions,
-        }
+            v.evaluate()
+        return True, None, -1
     except VerificationError as e:
-        return False, str(e), e.cycle, None
+        return False, str(e), e.cycle
     except Exception as e:
-        return False, f"Internal error: {e}", -1, None
+        return False, f"Internal error: {e}", -1
 
 
-class OpusMagnumPuzzleEnv:
-    """Tinker ProblemEnv-compatible environment for Opus Magnum.
+def _build_puzzle_pool(
+    complexity_level: int,
+    num_puzzles: int,
+    campaign_puzzle_dir: str,
+    generated_ratio: float,
+    seed: int,
+) -> list[Puzzle]:
+    """Load/generate a puzzle pool."""
+    from vendor.opus_magnum.puzzle_parser import parse_puzzle as parse_puzzle_file
 
-    This class implements the interface expected by tinker_cookbook's
-    ProblemEnv / ProblemGroupBuilder pattern. It can be used directly
-    with Tinker's training infrastructure.
+    rng = random.Random(seed)
+    puzzles: list[Puzzle] = []
 
-    If tinker_cookbook is installed, use OpusMagnumTinkerEnv which
-    inherits from ProblemEnv. If not, this standalone class has the
-    same methods for testing.
+    num_generated = int(num_puzzles * generated_ratio)
+    for i in range(num_generated):
+        try:
+            p = generate_puzzle(complexity_level=complexity_level, seed=seed + i)
+            if validate_puzzle(p):
+                puzzles.append(p)
+        except Exception:
+            pass
+
+    for f in sorted(glob.glob(f"{campaign_puzzle_dir}/*.puzzle")):
+        try:
+            p = parse_puzzle_file(f)
+            if not p.is_production:
+                puzzles.append(p)
+        except Exception:
+            pass
+
+    rng.shuffle(puzzles)
+    logger.info(f"Puzzle pool: {len(puzzles)} puzzles (level={complexity_level})")
+    return puzzles
+
+
+def make_tinker_dataset_builder(
+    complexity_level: int = 1,
+    batch_size: int = 128,
+    group_size: int = 16,
+    num_puzzles: int = 1000,
+    campaign_puzzle_dir: str = "puzzles/campaign",
+    generated_ratio: float = 0.7,
+    seed: int = 42,
+    cycle_limit: int = 100_000,
+    use_structure_scoring: bool = True,
+    model_name: str = "Qwen/Qwen3-4B",
+    renderer_name: str = "qwen3",
+):
+    """Build a Tinker RLDatasetBuilder for Opus Magnum.
+
+    Returns an instance compatible with train.Config.dataset_builder.
     """
+    from tinker_cookbook import renderers
+    from tinker_cookbook.rl.problem_env import ProblemEnv, ProblemGroupBuilder
+    from tinker_cookbook.rl.types import RLDataset, RLDatasetBuilder, EnvGroupBuilder
+    from tinker_cookbook.tokenizer_utils import get_tokenizer
+    import chz
 
-    def __init__(
-        self,
-        puzzle: Puzzle,
-        cycle_limit: int = 100_000,
-        use_structure_scoring: bool = True,
-        format_coef: float = 0.1,
-    ):
-        self.puzzle = puzzle
-        self.cycle_limit = cycle_limit
-        self.use_structure_scoring = use_structure_scoring
-        self.format_coef = format_coef
-        self._question = _format_puzzle_prompt(puzzle)
+    # Pre-generate puzzle pool
+    puzzles = _build_puzzle_pool(
+        complexity_level, num_puzzles, campaign_puzzle_dir,
+        generated_ratio, seed,
+    )
 
-    def get_question(self) -> str:
-        return self._question
+    # Define the ProblemEnv subclass
+    class OpusMagnumEnv(ProblemEnv):
+        def __init__(
+            self,
+            puzzle: Puzzle,
+            renderer: renderers.Renderer,
+            _cycle_limit: int = cycle_limit,
+            _use_structure_scoring: bool = use_structure_scoring,
+        ):
+            super().__init__(renderer)
+            self.puzzle = puzzle
+            self._cycle_limit = _cycle_limit
+            self._use_structure_scoring = _use_structure_scoring
 
-    def check_answer(self, response: str) -> bool | float:
-        """Check if the response solves the puzzle.
+        def get_question(self) -> str:
+            return _format_puzzle_prompt(self.puzzle)
 
-        Returns True/False for binary reward, or a float 0-1 for
-        structure-scored partial credit.
-        """
-        verified, error, error_cycle, metrics = _verify_with_omsim(
-            response, self.puzzle, self.cycle_limit
-        )
-
-        if verified:
-            return True
-
-        if self.use_structure_scoring:
-            struct = score_solution_structure(
-                response, self.puzzle,
-                omsim_error=error,
-                omsim_error_cycle=error_cycle,
+        def check_answer(self, response: str) -> float:
+            verified, error, error_cycle = _verify_with_omsim(
+                response, self.puzzle, self._cycle_limit
             )
-            return struct.score
-
-        return False
-
-    def check_format(self, response: str) -> bool:
-        """Check if the response has valid solution format."""
-        lines = response.strip().split("\n")
-        has_input = any(l.strip().startswith("INPUT ") for l in lines)
-        has_output = any(l.strip().startswith("OUTPUT ") for l in lines)
-        has_arm = any(l.strip().startswith("ARM ") for l in lines)
-        return has_input and has_output and has_arm
-
-    def get_reference_answer(self) -> str:
-        return REFERENCE_SOLUTION
-
-
-class OpusMagnumGroupBuilder:
-    """Builds groups of puzzle environments.
-
-    Compatible with Tinker's EnvGroupBuilder pattern. Each group
-    contains multiple environments for the same puzzle (for GRPO-style
-    group comparison).
-    """
-
-    def __init__(
-        self,
-        puzzle: Puzzle,
-        group_size: int = 4,
-        cycle_limit: int = 100_000,
-        use_structure_scoring: bool = True,
-    ):
-        self.puzzle = puzzle
-        self.group_size = group_size
-        self.cycle_limit = cycle_limit
-        self.use_structure_scoring = use_structure_scoring
-
-    def make_envs(self) -> list[OpusMagnumPuzzleEnv]:
-        """Create a group of environments for GRPO."""
-        return [
-            OpusMagnumPuzzleEnv(
-                puzzle=self.puzzle,
-                cycle_limit=self.cycle_limit,
-                use_structure_scoring=self.use_structure_scoring,
-            )
-            for _ in range(self.group_size)
-        ]
-
-
-class OpusMagnumDatasetBuilder:
-    """Builds the RL dataset from generated and campaign puzzles.
-
-    Compatible with Tinker's RLDatasetBuilder pattern.
-    """
-
-    def __init__(
-        self,
-        complexity_level: int = 1,
-        batch_size: int = 128,
-        group_size: int = 16,
-        num_puzzles: int = 1000,
-        campaign_puzzle_dir: str = "puzzles/campaign",
-        generated_ratio: float = 0.7,
-        seed: int = 42,
-        cycle_limit: int = 100_000,
-        use_structure_scoring: bool = True,
-    ):
-        self.complexity_level = complexity_level
-        self.batch_size = batch_size
-        self.group_size = group_size
-        self.num_puzzles = num_puzzles
-        self.campaign_puzzle_dir = campaign_puzzle_dir
-        self.generated_ratio = generated_ratio
-        self.seed = seed
-        self.cycle_limit = cycle_limit
-        self.use_structure_scoring = use_structure_scoring
-        self._puzzles: list[Puzzle] | None = None
-
-    def _load_puzzles(self) -> list[Puzzle]:
-        """Load/generate the puzzle pool."""
-        if self._puzzles is not None:
-            return self._puzzles
-
-        import glob
-        import random
-        from vendor.opus_magnum.puzzle_parser import parse_puzzle
-
-        rng = random.Random(self.seed)
-        puzzles: list[Puzzle] = []
-
-        # Generate puzzles
-        num_generated = int(self.num_puzzles * self.generated_ratio)
-        for i in range(num_generated):
-            try:
-                p = generate_puzzle(
-                    complexity_level=self.complexity_level,
-                    seed=self.seed + i,
+            if verified:
+                return 1.0
+            if self._use_structure_scoring:
+                struct = score_solution_structure(
+                    response, self.puzzle,
+                    omsim_error=error,
+                    omsim_error_cycle=error_cycle,
                 )
-                if validate_puzzle(p):
-                    puzzles.append(p)
-            except Exception:
-                pass
+                return struct.score
+            return 0.0
 
-        # Load campaign puzzles
-        pattern = f"{self.campaign_puzzle_dir}/*.puzzle"
-        for f in sorted(glob.glob(pattern)):
-            try:
-                p = parse_puzzle(f)
-                if not p.is_production:
-                    puzzles.append(p)
-            except Exception:
-                pass
+        def check_format(self, response: str) -> bool:
+            lines = response.strip().split("\n")
+            has_input = any(l.strip().startswith("INPUT ") for l in lines)
+            has_output = any(l.strip().startswith("OUTPUT ") for l in lines)
+            has_arm = any(l.strip().startswith("ARM ") for l in lines)
+            return has_input and has_output and has_arm
 
-        rng.shuffle(puzzles)
-        self._puzzles = puzzles
-        logger.info(f"Loaded {len(puzzles)} puzzles "
-                    f"({num_generated} generated, {len(puzzles) - num_generated} campaign)")
-        return puzzles
+        def get_reference_answer(self) -> str:
+            return REFERENCE_SOLUTION
 
-    def get_batch(self, index: int) -> list[OpusMagnumGroupBuilder]:
-        """Get a batch of EnvGroupBuilders for training."""
-        puzzles = self._load_puzzles()
-        batch: list[OpusMagnumGroupBuilder] = []
+    # Define the Dataset
+    class OpusMagnumDataset(RLDataset):
+        def __init__(self, renderer: renderers.Renderer):
+            self.renderer = renderer
 
-        for i in range(self.batch_size):
-            puzzle_idx = (index * self.batch_size + i) % len(puzzles)
-            batch.append(OpusMagnumGroupBuilder(
-                puzzle=puzzles[puzzle_idx],
-                group_size=self.group_size,
-                cycle_limit=self.cycle_limit,
-                use_structure_scoring=self.use_structure_scoring,
-            ))
+        def get_batch(self, index: int) -> Sequence[EnvGroupBuilder]:
+            batch = []
+            for i in range(batch_size):
+                puzzle = puzzles[(index * batch_size + i) % len(puzzles)]
 
-        return batch
+                def make_env(p=puzzle, r=self.renderer):
+                    return OpusMagnumEnv(puzzle=p, renderer=r)
+
+                batch.append(ProblemGroupBuilder(
+                    env_thunk=make_env,
+                    num_envs=group_size,
+                ))
+            return batch
+
+        def __len__(self) -> int:
+            return math.ceil(len(puzzles) / batch_size)
+
+    # Define the DatasetBuilder
+    @chz.chz
+    class OpusMagnumDatasetBuilder(RLDatasetBuilder):
+        model_name_for_tokenizer: str = model_name
+        renderer_name_: str = renderer_name
+
+        async def __call__(self) -> tuple[RLDataset, RLDataset | None]:
+            tokenizer = get_tokenizer(self.model_name_for_tokenizer)
+            renderer = renderers.get_renderer(self.renderer_name_, tokenizer=tokenizer)
+            return OpusMagnumDataset(renderer), None
+
+    return OpusMagnumDatasetBuilder()
