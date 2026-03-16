@@ -10,9 +10,9 @@ multiple levels. Each level is a prerequisite for the next:
   Level 4 (0.4): Has at least one ARM with a TAPE
   Level 5 (0.5): Has appropriate GLYPH(s) for the required transformation
   Level 6 (0.6): All glyph/arm type names are valid
-  Level 7 (0.7): No static overlaps at cycle 0 (positions don't collide)
-  Level 8 (0.8): Passes omsim load (structurally valid enough to simulate)
-  Level 9 (0.9): Runs for >0 cycles before failing
+  Level 7 (0.1): No placement/load errors — omsim accepted the solution
+  Level 8 (0.1): Ran to cycle limit without crashing (but produced no output)
+  Level 9 (0.1–0.5): Crashed mid-run; score = 0.1 + min(cycle/100, 1.0) * 0.4
   Level 10 (1.0): Verified correct by omsim
 
 This can be toggled via RewardConfig.use_structure_scoring.
@@ -229,33 +229,46 @@ def score_solution_structure(
             description="Structurally complete, not yet verified",
         )
 
-    # Level 7: Check if it's a static overlap (cycle 0 error)
-    details["no_static_overlap"] = "overlap" not in omsim_error.lower() or omsim_error_cycle > 0
+    # Level 7: Check if it's a placement/initial-conditions error.
+    # omsim reports two distinct overlap patterns:
+    #   - "overlap" at error_cycle==0: a classic static placement conflict
+    #   - "overlapping atoms before motion phase" at error_cycle==1: multiple
+    #     inputs/outputs placed on the same hex cause atoms to spawn on top of
+    #     each other before any arm has moved.  The cycle counter is 1 here
+    #     (pre-motion of cycle 1), not 0, so the old `cycle > 0` guard was
+    #     incorrectly promoting these to L9.
+    err_lower = omsim_error.lower()
+    is_placement_error = (
+        ("overlap" in err_lower and omsim_error_cycle <= 0)
+        or "overlapping atoms before motion phase" in err_lower
+    )
+    details["no_static_overlap"] = not is_placement_error
     if not details["no_static_overlap"]:
         return StructureScore(
             level=6, score=0.6, details=details,
-            description=f"Static overlap at cycle 0: {omsim_error[:80]}",
+            description=f"Placement overlap: {omsim_error[:80]}",
         )
 
     # Level 8: Did omsim load and start simulating?
     details["omsim_loaded"] = omsim_error_cycle >= 0 or "did not complete" in omsim_error
     if not details["omsim_loaded"]:
         return StructureScore(
-            level=7, score=0.7, details=details,
+            level=7, score=0.1, details=details,
             description=f"omsim load error: {omsim_error[:80]}",
         )
 
-    # Level 9: Ran for some cycles before failing
+    # Level 9: Crashed mid-run — scale 0.1–0.5 by how many cycles it ran.
+    # More cycles = arms were doing something meaningful before failing.
     if omsim_error_cycle > 0:
-        # Scale 0.8-0.9 based on how far it got (more cycles = closer to working)
-        cycle_bonus = min(omsim_error_cycle / 100.0, 1.0) * 0.1
+        cycle_bonus = min(omsim_error_cycle / 100.0, 1.0) * 0.4
         return StructureScore(
-            level=9, score=0.8 + cycle_bonus, details=details,
+            level=9, score=0.1 + cycle_bonus, details=details,
             description=f"Runtime error at cycle {omsim_error_cycle}: {omsim_error[:60]}",
         )
 
-    # Ran but didn't complete (e.g. cycle limit)
+    # Ran to cycle limit without crashing — but produced no output.
+    # No better than a load success; arms are just spinning uselessly.
     return StructureScore(
-        level=8, score=0.8, details=details,
-        description=f"Simulation failed: {omsim_error[:80]}",
+        level=8, score=0.1, details=details,
+        description=f"Ran to cycle limit, no output: {omsim_error[:80]}",
     )

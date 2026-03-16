@@ -3,11 +3,12 @@
 Adapts our puzzle generator, omsim verifier, and structure scorer
 into Tinker's ProblemEnv interface.
 
-Tinker's ProblemEnv.step() computes reward as:
-  format_coef * (check_format - 1) + check_answer
+Multi-turn: the model gets up to max_attempts tries per puzzle.
+Each failed attempt returns episode_done=False with the omsim error
+as feedback. Reward is only assigned on the final step.
 
-So if check_answer returns a float (structure score 0-1), the reward
-is smooth. If check_format returns 0, there's a format penalty.
+Final reward formula (same as ProblemEnv default):
+  format_coef * (check_format - 1) + check_answer
 """
 
 from __future__ import annotations
@@ -27,6 +28,7 @@ from om_rl.env.observation import (
     GAME_REFERENCE,
     SOLUTION_FORMAT,
     FEW_SHOT_EXAMPLES,
+    format_feedback_observation,
 )
 from om_rl.complexity.structure_scorer import score_solution_structure
 from om_rl.puzzle_gen.generator import generate_puzzle
@@ -64,10 +66,11 @@ def _format_puzzle_prompt(puzzle: Puzzle) -> str:
     )
 
     return (
-        f"Solve this Opus Magnum puzzle. Output a complete solution.\n\n"
+        f"Solve this Opus Magnum puzzle. You may submit multiple attempts — "
+        f"each failed attempt will return the simulator error so you can iterate.\n\n"
         f"{GAME_REFERENCE}\n{SOLUTION_FORMAT}\n{FEW_SHOT_EXAMPLES}\n"
         f"{puzzle_text}\n{io_text}\n"
-        f"Output ONLY the solution — no explanation needed."
+        f"Output ONLY the solution — no preamble or explanation."
     )
 
 
@@ -126,6 +129,8 @@ def make_tinker_dataset_builder(
     use_structure_scoring: bool = True,
     model_name: str = "Qwen/Qwen3-4B",
     renderer_name: str = "qwen3",
+    max_tokens: int = 8192,
+    max_attempts: int = 3,
 ):
     """Build a Tinker RLDatasetBuilder for Opus Magnum.
 
@@ -142,14 +147,32 @@ def make_tinker_dataset_builder(
 
     Returns an instance compatible with train.Config.dataset_builder.
     """
+    import tinker
+    import chz
     from tinker_cookbook import renderers
     from tinker_cookbook.rl.problem_env import ProblemEnv, ProblemGroupBuilder
-    from tinker_cookbook.rl.types import RLDataset, RLDatasetBuilder, EnvGroupBuilder
+    from tinker_cookbook.rl.types import RLDataset, RLDatasetBuilder, EnvGroupBuilder, StepResult
     from tinker_cookbook.tokenizer_utils import get_tokenizer
-    import chz
 
     if max_level is None:
         max_level = complexity_level
+
+    # Reserve ~25% of the token budget for reasoning; the rest is for the solution.
+    thinking_budget = max_tokens // 4
+    solution_budget = max_tokens - thinking_budget
+
+    _system_prompt = (
+        f"You are solving Opus Magnum puzzles. You have up to {max_attempts} attempts per puzzle — "
+        f"after each failed attempt you will receive the error from the simulator and can revise your solution. "
+        f"You do not need to solve the puzzle on the first try: use early attempts to get the structure right "
+        f"(valid INPUT/OUTPUT/ARM/TAPE lines), then refine positions and tape logic in later attempts.\n\n"
+        f"Token budget: you have {max_tokens} tokens per attempt. "
+        f"Keep your reasoning under {thinking_budget} tokens so you have at least "
+        f"{solution_budget} tokens left to write the solution. "
+        f"If you are still reasoning and running low on space, stop immediately "
+        f"and output the best solution you have — a valid attempt that can be scored "
+        f"is always better than a truncated response that scores zero."
+    )
 
     # Pre-generate puzzle pools for each level
     puzzle_pools: dict[int, list[Puzzle]] = {}
@@ -166,60 +189,92 @@ def make_tinker_dataset_builder(
             renderer: renderers.Renderer,
             _cycle_limit: int = cycle_limit,
             _use_structure_scoring: bool = use_structure_scoring,
+            _convo_prefix: list | None = None,
         ):
-            super().__init__(renderer)
+            super().__init__(renderer, convo_prefix=_convo_prefix or [])
             self.puzzle = puzzle
             self._cycle_limit = _cycle_limit
             self._use_structure_scoring = _use_structure_scoring
+            self._attempt = 0
+            self._convo: list = []
 
         def get_question(self) -> str:
             return _format_puzzle_prompt(self.puzzle)
 
-        def _score(self, response: str) -> tuple[float, int]:
-            """Score a response. Returns (score, level).
+        def get_reference_answer(self) -> str:
+            return REFERENCE_SOLUTION
 
-            Only gives partial credit for L8+ (omsim actually simulated).
-            L0-L7 all map to 0.0 — we don't reward "looks correct",
-            only "runs correctly" or "almost runs correctly".
-
-            Cached per step since check_format and check_answer
-            are called on the same response.
-            """
-            if not hasattr(self, '_cached_response') or self._cached_response != response:
-                verified, error, error_cycle = _verify_with_omsim(
-                    response, self.puzzle, self._cycle_limit
+        def _score(self, response: str, verified: bool, error: str | None, error_cycle: int) -> tuple[float, int]:
+            """Compute (score, level) given pre-run omsim results."""
+            if verified:
+                return (1.0, 10)
+            if self._use_structure_scoring:
+                struct = score_solution_structure(
+                    response, self.puzzle,
+                    omsim_error=error,
+                    omsim_error_cycle=error_cycle,
                 )
-                if verified:
-                    self._cached_score = (1.0, 10)
-                elif self._use_structure_scoring:
-                    struct = score_solution_structure(
-                        response, self.puzzle,
-                        omsim_error=error,
-                        omsim_error_cycle=error_cycle,
-                    )
-                    # Only give credit for L8+ (omsim loaded and simulated)
-                    # L0-L7 get 0.0 — no reward for formatted-but-wrong
-                    if struct.level >= 8:
-                        self._cached_score = (struct.score, struct.level)
-                    else:
-                        self._cached_score = (0.0, struct.level)
+                # Only give credit for L7+ (omsim accepted the solution).
+                # L0-L6 get 0.0 — no reward for formatted-but-wrong.
+                if struct.level >= 7:
+                    return (struct.score, struct.level)
                 else:
-                    self._cached_score = (0.0, 0)
-                self._cached_response = response
-            return self._cached_score
+                    return (0.0, struct.level)
+            return (0.0, 0)
 
+        # check_answer / check_format are required by the abstract base but only
+        # used in ProblemEnv.step(), which we fully override below.
         def check_answer(self, response: str) -> float:
-            score, level = self._score(response)
+            verified, error, error_cycle = _verify_with_omsim(response, self.puzzle, self._cycle_limit)
+            score, _ = self._score(response, verified, error, error_cycle)
             return score
 
         def check_format(self, response: str) -> bool:
-            # Format is "correct" if structure scorer reaches L4+
-            # (has INPUT, OUTPUT, correct counts, and ARM with TAPE)
-            _, level = self._score(response)
+            verified, error, error_cycle = _verify_with_omsim(response, self.puzzle, self._cycle_limit)
+            _, level = self._score(response, verified, error, error_cycle)
             return level >= 4
 
-        def get_reference_answer(self) -> str:
-            return REFERENCE_SOLUTION
+        async def initial_observation(self):
+            self._attempt = 0
+            self._convo = self.convo_prefix + [
+                {"role": "user", "content": self.get_question()},
+            ]
+            return self.renderer.build_generation_prompt(self._convo), self.stop_condition
+
+        async def step(self, action) -> StepResult:
+            message, parse_success = self.renderer.parse_response(action)
+            response = message["content"]
+            self._attempt += 1
+
+            verified, error, error_cycle = _verify_with_omsim(response, self.puzzle, self._cycle_limit)
+            is_final = verified or self._attempt >= max_attempts
+
+            if is_final:
+                score, level = self._score(response, verified, error, error_cycle)
+                correct_format = float(parse_success and level >= 4)
+                total_reward = self.format_coef * (correct_format - 1) + score
+                return StepResult(
+                    reward=total_reward,
+                    episode_done=True,
+                    next_observation=tinker.ModelInput.empty(),
+                    next_stop_condition=self.stop_condition,
+                    metrics={"format": correct_format, "correct": score},
+                )
+            else:
+                # Append assistant response + error feedback, continue episode
+                self._convo.append({"role": "assistant", "content": response})
+                feedback = format_feedback_observation(
+                    self.puzzle, error or "", self._attempt, max_attempts
+                )
+                self._convo.append({"role": "user", "content": feedback})
+                next_ob = self.renderer.build_generation_prompt(self._convo)
+                return StepResult(
+                    reward=0.0,
+                    episode_done=False,
+                    next_observation=next_ob,
+                    next_stop_condition=self.stop_condition,
+                    metrics={},
+                )
 
     # Define the Dataset
     class OpusMagnumDataset(RLDataset):
@@ -285,7 +340,12 @@ def make_tinker_dataset_builder(
                 puzzle = self._pick_puzzle(index, i)
 
                 def make_env(p=puzzle, r=self.renderer):
-                    return OpusMagnumEnv(puzzle=p, renderer=r)
+                    return OpusMagnumEnv(
+                        puzzle=p,
+                        renderer=r,
+                        _convo_prefix=[{"role": "system", "content": _system_prompt}],
+                    )
+
 
                 batch.append(ProblemGroupBuilder(
                     env_thunk=make_env,

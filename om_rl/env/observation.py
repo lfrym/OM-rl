@@ -31,7 +31,7 @@ GLYPHS activate on ungrabbed atoms on their tiles:
 - Unification (5 hex): air+fire+water+earth->quintessence. Dispersion (5 hex): reverse.
 - Disposal (7 hex): destroys atoms.
 
-OVERLAP RULES: No two parts may share a hex at cycle 0 (arm bases, grippers, glyph tiles, track hexes, I/O atoms).
+PLACEMENT RULES: Each hex may hold at most one tile: a glyph footprint hex, an input, an output, or a track hex must not share a hex with any other tile. Arms are mechanisms, not tiles — arm bases and grippers do not occupy board hexes and may be placed freely (including on track hexes).
 """
 
 SOLUTION_FORMAT = """\
@@ -95,14 +95,15 @@ def format_initial_observation(puzzle: Puzzle) -> str:
     io_text = _format_io_requirements(puzzle)
 
     return f"""\
-Solve this Opus Magnum puzzle. Output a complete solution.
+Solve this Opus Magnum puzzle. You may submit multiple attempts — \
+each failed attempt will return the simulator error so you can iterate.
 
 {GAME_REFERENCE}
 {SOLUTION_FORMAT}
 {FEW_SHOT_EXAMPLES}
 {puzzle_text}
 {io_text}
-Output ONLY the solution — no explanation needed."""
+Output ONLY the solution — no preamble or explanation."""
 
 
 def format_feedback_observation(

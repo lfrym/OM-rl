@@ -71,12 +71,15 @@ class Config:
     # Puzzles
     level: int = 1
     max_level: int = 3
-    curriculum_step_interval: int = 5
+    curriculum_step_interval: int = 10
     batch_size: int = 8
     group_size: int = 8
     num_puzzles: int = 1000
     seed: int = 42
     use_structure_scoring: bool = True
+
+    # Multi-turn
+    max_attempts: int = 5
 
     # Logging & overrides
     wandb_project: str | None = "om-rl"
@@ -95,6 +98,7 @@ def main(config: Config) -> None:
     logger.info(f"  Max tokens: {config.max_tokens}, Max steps: {config.max_steps}")
     logger.info(f"  KL penalty: {config.kl_penalty_coef}")
     logger.info(f"  Structure scoring: {config.use_structure_scoring}")
+    logger.info(f"  Max attempts per puzzle: {config.max_attempts}")
     logger.info(f"  Log path: {log_path}")
 
     from om_rl.tinker.env import make_tinker_dataset_builder
@@ -127,6 +131,8 @@ def main(config: Config) -> None:
         use_structure_scoring=config.use_structure_scoring,
         model_name=config.model_name,
         renderer_name=renderer_name,
+        max_tokens=config.max_tokens,
+        max_attempts=config.max_attempts,
     )
 
     train_config = train.Config(
