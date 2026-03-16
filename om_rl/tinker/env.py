@@ -13,21 +13,17 @@ Final reward formula (same as ProblemEnv default):
 
 from __future__ import annotations
 
-import glob
 import logging
-import math
 import random
-from typing import Literal, Sequence
+from typing import Sequence
 
-from vendor.opus_magnum.models import Puzzle
+from vendor.opus_magnum.models import Puzzle, Solution
 from vendor.opus_magnum.text_format import parse_text_solution
 from vendor.opus_magnum.solution_writer import write_solution
 from vendor.opus_magnum.verifier import Verifier, VerificationError
 
 from om_rl.env.observation import (
-    GAME_REFERENCE,
-    SOLUTION_FORMAT,
-    FEW_SHOT_EXAMPLES,
+    format_initial_observation,
     format_feedback_observation,
 )
 from om_rl.complexity.structure_scorer import score_solution_structure
@@ -49,49 +45,44 @@ ARM arm1 pos=(0,-1) rot=1 ext=1 id=1
 
 def _format_puzzle_prompt(puzzle: Puzzle) -> str:
     """Format a puzzle as a prompt string."""
-    from vendor.opus_magnum.text_format import puzzle_to_text
-
-    puzzle_text = puzzle_to_text(puzzle)
-    num_inputs = len(puzzle.inputs)
-    num_outputs = len(puzzle.outputs)
-    input_indices = ", ".join(str(i) for i in range(num_inputs))
-    output_indices = ", ".join(str(i) for i in range(num_outputs))
-
-    io_text = (
-        f"I/O PLACEMENT:\n"
-        f"Place inputs and outputs anywhere on the board.\n"
-        f"  Required inputs: {num_inputs} (molecule indices: {input_indices})\n"
-        f"  Required outputs: {num_outputs} (molecule indices: {output_indices})\n"
-        f"Arms grab atoms FROM inputs and deliver assembled molecules TO outputs."
-    )
-
-    return (
-        f"Solve this Opus Magnum puzzle. You may submit multiple attempts — "
-        f"each failed attempt will return the simulator error so you can iterate.\n\n"
-        f"{GAME_REFERENCE}\n{SOLUTION_FORMAT}\n{FEW_SHOT_EXAMPLES}\n"
-        f"{puzzle_text}\n{io_text}\n"
-        f"Output ONLY the solution — no preamble or explanation."
-    )
+    return format_initial_observation(puzzle)
 
 
 def _verify_with_omsim(
     solution_text: str, puzzle: Puzzle, cycle_limit: int = 100_000,
-) -> tuple[bool, str | None, int]:
-    """Parse and verify a solution. Returns (verified, error, error_cycle)."""
+) -> tuple[bool, str | None, int, tuple[int, int] | None, Solution | None]:
+    """Parse and verify a solution.
+
+    Returns (verified, error, error_cycle, error_location, solution).
+    solution is None if parsing failed.
+    """
     try:
         solution = parse_text_solution(solution_text, puzzle.name)
     except Exception as e:
-        return False, f"Parse error: {e}", -1
+        return False, f"Parse error: {e}", -1, None, None
 
     try:
         sol_bytes = write_solution(solution)
         with Verifier(puzzle.raw_bytes, sol_bytes, cycle_limit) as v:
             v.evaluate()
-        return True, None, -1
+        return True, None, -1, None, solution
     except VerificationError as e:
-        return False, str(e), e.cycle
+        error_str = str(e)
+        error_cycle = e.cycle
+        error_location = e.location if (e.location and e.location != (0, 0)) else None
+        # "did not complete" errors report cycle=0 and location=(0,0) as defaults — meaningless
+        is_timeout = "cycle limit" in error_str.lower() or "did not complete" in error_str.lower()
+        if is_timeout:
+            error_cycle = -1
+            error_location = None
+            error_str = (
+                "The machine ran for the maximum number of cycles without completing. "
+                "This usually means atoms are not reaching the output position, or the "
+                "output molecule shape/orientation does not match."
+            )
+        return False, error_str, error_cycle, error_location, solution
     except Exception as e:
-        return False, f"Internal error: {e}", -1
+        return False, f"Internal error: {e}", -1, None, solution
 
 
 def _build_puzzle_pool(
@@ -157,8 +148,8 @@ def make_tinker_dataset_builder(
     if max_level is None:
         max_level = complexity_level
 
-    # Reserve ~25% of the token budget for reasoning; the rest is for the solution.
-    thinking_budget = max_tokens // 4
+    # Reserve ~25% of the token budget for final response
+    thinking_budget = (max_tokens * 3) // 4
     solution_budget = max_tokens - thinking_budget
 
     _system_prompt = (
@@ -225,12 +216,12 @@ def make_tinker_dataset_builder(
         # check_answer / check_format are required by the abstract base but only
         # used in ProblemEnv.step(), which we fully override below.
         def check_answer(self, response: str) -> float:
-            verified, error, error_cycle = _verify_with_omsim(response, self.puzzle, self._cycle_limit)
+            verified, error, error_cycle, _, _ = _verify_with_omsim(response, self.puzzle, self._cycle_limit)
             score, _ = self._score(response, verified, error, error_cycle)
             return score
 
         def check_format(self, response: str) -> bool:
-            verified, error, error_cycle = _verify_with_omsim(response, self.puzzle, self._cycle_limit)
+            verified, error, error_cycle, _, _ = _verify_with_omsim(response, self.puzzle, self._cycle_limit)
             _, level = self._score(response, verified, error, error_cycle)
             return level >= 4
 
@@ -246,7 +237,9 @@ def make_tinker_dataset_builder(
             response = message["content"]
             self._attempt += 1
 
-            verified, error, error_cycle = _verify_with_omsim(response, self.puzzle, self._cycle_limit)
+            verified, error, error_cycle, error_location, solution = _verify_with_omsim(
+                response, self.puzzle, self._cycle_limit
+            )
             is_final = verified or self._attempt >= max_attempts
 
             if is_final:
@@ -264,7 +257,8 @@ def make_tinker_dataset_builder(
                 # Append assistant response + error feedback, continue episode
                 self._convo.append({"role": "assistant", "content": response})
                 feedback = format_feedback_observation(
-                    self.puzzle, error or "", self._attempt, max_attempts
+                    solution, self.puzzle, error or "", error_cycle, error_location,
+                    self._attempt, max_attempts,
                 )
                 self._convo.append({"role": "user", "content": feedback})
                 next_ob = self.renderer.build_generation_prompt(self._convo)
@@ -345,7 +339,6 @@ def make_tinker_dataset_builder(
                         renderer=r,
                         _convo_prefix=[{"role": "system", "content": _system_prompt}],
                     )
-
 
                 batch.append(ProblemGroupBuilder(
                     env_thunk=make_env,

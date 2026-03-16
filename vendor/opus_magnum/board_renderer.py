@@ -33,7 +33,7 @@ def render_solution_summary(
     lines: list[str] = []
 
     # ── Part placement summary ──
-    lines.append("SOLUTION LAYOUT:")
+    lines.append("YOUR ATTEMPT:")
     lines.append("")
 
     # Track all occupied hexes for overlap detection
@@ -113,7 +113,15 @@ def render_solution_summary(
         lines.append("")
 
     # ── Overlap detection (static) ──
-    overlaps = {pos: parts for pos, parts in occupied.items() if len(parts) > 1}
+    # ARM_GRIP overlaps are never a static issue — the gripper hovering over
+    # an input/output is how grabbing works. Only ARM_BASE overlaps matter.
+    def _is_real_overlap(parts: list[tuple[str, str]]) -> bool:
+        if len(parts) <= 1:
+            return False
+        non_grip = [p for p in parts if p[0] != "ARM_GRIP"]
+        return len(non_grip) > 1
+
+    overlaps = {pos: parts for pos, parts in occupied.items() if _is_real_overlap(parts)}
     if overlaps:
         lines.append("STATIC OVERLAPS DETECTED:")
         for (u, v), parts in sorted(overlaps.items()):
@@ -241,8 +249,9 @@ def _render_hex_map(
             return " X "
 
         types = {p[0] for p in parts}
+        non_grip = [p for p in parts if p[0] != "ARM_GRIP"]
         # Priority rendering
-        if len(parts) > 1:
+        if len(non_grip) > 1:
             sym = "!!" if not is_error else "!X"
         elif "ARM_BASE" in types:
             sym = "Ab"
@@ -260,7 +269,7 @@ def _render_hex_map(
             sym = "??"
 
         if is_error:
-            return f"*{sym[0]}"
+            return f">{sym}"
         return f" {sym}"
 
     lines = []
@@ -279,6 +288,7 @@ def _render_hex_map(
 
     lines.append("")
     lines.append("  Legend: Ab=arm base, Ag=arm gripper, Gl=glyph, Tk=track,")
-    lines.append("          In=input atom, Ou=output atom, !!=overlap, X=error location")
+    lines.append("          In=input atom, Ou=output atom, !!=overlap")
+    lines.append("          X=error location (empty hex), >XX=error location (at part XX)")
 
     return "\n".join(lines)

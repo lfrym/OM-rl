@@ -6,7 +6,8 @@ with additions for iterative feedback and simulation state.
 
 from __future__ import annotations
 
-from vendor.opus_magnum.models import Puzzle
+from vendor.opus_magnum.board_renderer import render_solution_summary
+from vendor.opus_magnum.models import Puzzle, Solution
 from vendor.opus_magnum.text_format import puzzle_to_text
 
 
@@ -31,7 +32,7 @@ GLYPHS activate on ungrabbed atoms on their tiles:
 - Unification (5 hex): air+fire+water+earth->quintessence. Dispersion (5 hex): reverse.
 - Disposal (7 hex): destroys atoms.
 
-PLACEMENT RULES: Each hex may hold at most one tile: a glyph footprint hex, an input, an output, or a track hex must not share a hex with any other tile. Arms are mechanisms, not tiles — arm bases and grippers do not occupy board hexes and may be placed freely (including on track hexes).
+PLACEMENT RULES: Each hex may hold at most one part. Arm bases and grippers cannot share a hex with glyphs, inputs, outputs, or other arms. Arms may be placed on track hexes.
 """
 
 SOLUTION_FORMAT = """\
@@ -101,27 +102,44 @@ each failed attempt will return the simulator error so you can iterate.
 {GAME_REFERENCE}
 {SOLUTION_FORMAT}
 {FEW_SHOT_EXAMPLES}
+━━━ YOUR PUZZLE ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
 {puzzle_text}
 {io_text}
 Output ONLY the solution — no preamble or explanation."""
 
 
 def format_feedback_observation(
+    solution: Solution | None,
     puzzle: Puzzle,
     error_message: str,
+    error_cycle: int,
+    error_location: tuple[int, int] | None,
     attempt_num: int,
     max_attempts: int,
-    board_state: str | None = None,
 ) -> str:
-    """Format observation after a failed attempt, including error feedback."""
-    lines = [
-        f"Attempt {attempt_num}/{max_attempts} failed.",
-        f"Error: {error_message}",
-    ]
-    if board_state:
-        lines.append(f"\nBoard state at error:\n{board_state}")
-    lines.append("\nFix the issue and submit a new solution.")
-    return "\n".join(lines)
+    """Format observation after a failed attempt, including rich board diagnostics."""
+    header = f"Attempt {attempt_num}/{max_attempts} failed.\n"
+
+    if solution is None:
+        # Parsing failed — no board to render
+        hint = (
+            "Your response could not be parsed. "
+            "Check that every line matches the exact format:\n"
+            "  INPUT pos=(<u>,<v>) rot=<0-5> idx=<n>\n"
+            "  OUTPUT pos=(<u>,<v>) rot=<0-5> idx=<n>\n"
+            "  ARM <type> pos=(<u>,<v>) rot=<0-5> ext=<n> id=<n>\n"
+            "    TAPE: <cycle>:<instr> ...\n"
+        )
+        return f"{header}Parse error: {error_message}\n\n{hint}Submit a corrected solution."
+
+    board = render_solution_summary(
+        solution, puzzle,
+        error_msg=error_message,
+        error_cycle=error_cycle,
+        error_location=error_location,
+    )
+    return f"{header}\n{board}\nFix the issue and submit a new solution."
 
 
 def _format_io_requirements(puzzle: Puzzle) -> str:
