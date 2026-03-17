@@ -72,8 +72,8 @@ class Config:
     level: int = 1
     max_level: int = 3
     curriculum_step_interval: int = 10
-    batch_size: int = 8
-    group_size: int = 8
+    batch_size: int = 4
+    group_size: int = 4
     num_puzzles: int = 1000
     seed: int = 42
     use_structure_scoring: bool = True
