@@ -131,7 +131,7 @@ def format_feedback_observation(
             "  ARM <type> pos=(<u>,<v>) rot=<0-5> ext=<n> id=<n>\n"
             "    TAPE: <cycle>:<instr> ...\n"
         )
-        return f"{header}Parse error: {error_message}\n\n{hint}Submit a corrected solution."
+        return f"{header}Parsing error: {error_message}\n\n{hint}Submit a corrected solution."
 
     board = render_solution_summary(
         solution, puzzle,

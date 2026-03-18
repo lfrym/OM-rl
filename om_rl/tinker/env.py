@@ -48,8 +48,89 @@ def _format_puzzle_prompt(puzzle: Puzzle) -> str:
     return format_initial_observation(puzzle)
 
 
+def _log_parse_failure_details(
+    solution_text: str,
+    puzzle_name: str,
+    exc: Exception,
+    raw_decoded_text: str | None = None,
+) -> None:
+    """Log exact parser inputs for debugging malformed model outputs."""
+    logger.warning("Parse failure for puzzle %s: %r", puzzle_name, exc)
+    logger.warning("Parsed assistant content repr: %r", solution_text)
+    if raw_decoded_text is not None:
+        logger.warning("Raw decoded sample repr: %r", raw_decoded_text)
+
+    for idx, line in enumerate(solution_text.splitlines(), start=1):
+        stripped = line.strip()
+        logger.warning("Parsed line %d repr: %r", idx, line)
+        if stripped.startswith(("INPUT ", "OUTPUT ", "ARM ", "GLYPH ", "TRACK ")):
+            parts = stripped.split()
+            logger.warning("Parsed line %d split tokens: %r", idx, parts)
+            kv = {}
+            for tok in parts[1:]:
+                if "=" in tok:
+                    k, v = tok.split("=", 1)
+                    kv[k.strip()] = v.strip()
+            logger.warning("Parsed line %d kv tokens: %r", idx, kv)
+
+    if raw_decoded_text is None:
+        return
+
+    for idx, line in enumerate(raw_decoded_text.splitlines(), start=1):
+        stripped = line.strip()
+        logger.warning("Raw line %d repr: %r", idx, line)
+        if stripped.startswith(("INPUT ", "OUTPUT ", "ARM ", "GLYPH ", "TRACK ")):
+            parts = stripped.split()
+            logger.warning("Raw line %d split tokens: %r", idx, parts)
+            kv = {}
+            for tok in parts[1:]:
+                if "=" in tok:
+                    k, v = tok.split("=", 1)
+                    kv[k.strip()] = v.strip()
+            logger.warning("Raw line %d kv tokens: %r", idx, kv)
+
+
+def _format_parse_error_message(solution_text: str, exc: Exception) -> str:
+    """Build a user-facing parse error message with likely offending line."""
+    def kv_tokens(line: str) -> dict[str, str]:
+        result = {}
+        for tok in line.split()[1:]:
+            if "=" in tok:
+                k, v = tok.split("=", 1)
+                result[k.strip()] = v.strip()
+        return result
+
+    def find_bad_line() -> tuple[int, str] | None:
+        for idx, raw_line in enumerate(solution_text.splitlines(), start=1):
+            line = raw_line.strip()
+            if line.startswith(("INPUT ", "OUTPUT ", "ARM ", "GLYPH ")):
+                kv = kv_tokens(line)
+                if "pos" not in kv:
+                    return idx, raw_line
+                if any(marker in line for marker in ("...", "<u>", "<v>", "(u,v)", "(...)")):
+                    return idx, raw_line
+            elif line.startswith("TRACK "):
+                if "..." in line:
+                    return idx, raw_line
+        return None
+
+    line_info = find_bad_line()
+    detail = str(exc)
+    if isinstance(exc, KeyError) and exc.args == ("pos",):
+        detail = "missing required `pos=...` field on a solution line"
+
+    if line_info is None:
+        return detail
+
+    line_num, content = line_info
+    return f"{detail}\nError encountered at line {line_num}: {content}"
+
+
 def _verify_with_omsim(
-    solution_text: str, puzzle: Puzzle, cycle_limit: int = 100_000,
+    solution_text: str,
+    puzzle: Puzzle,
+    cycle_limit: int = 100_000,
+    raw_decoded_text: str | None = None,
 ) -> tuple[bool, str | None, int, tuple[int, int] | None, Solution | None]:
     """Parse and verify a solution.
 
@@ -59,7 +140,8 @@ def _verify_with_omsim(
     try:
         solution = parse_text_solution(solution_text, puzzle.name)
     except Exception as e:
-        return False, f"Parse error: {e}", -1, None, None
+        _log_parse_failure_details(solution_text, puzzle.name, e, raw_decoded_text=raw_decoded_text)
+        return False, _format_parse_error_message(solution_text, e), -1, None, None
 
     try:
         sol_bytes = write_solution(solution)
@@ -216,12 +298,16 @@ def make_tinker_dataset_builder(
         # check_answer / check_format are required by the abstract base but only
         # used in ProblemEnv.step(), which we fully override below.
         def check_answer(self, response: str) -> float:
-            verified, error, error_cycle, _, _ = _verify_with_omsim(response, self.puzzle, self._cycle_limit)
+            verified, error, error_cycle, _, _ = _verify_with_omsim(
+                response, self.puzzle, self._cycle_limit,
+            )
             score, _ = self._score(response, verified, error, error_cycle)
             return score
 
         def check_format(self, response: str) -> bool:
-            verified, error, error_cycle, _, _ = _verify_with_omsim(response, self.puzzle, self._cycle_limit)
+            verified, error, error_cycle, _, _ = _verify_with_omsim(
+                response, self.puzzle, self._cycle_limit,
+            )
             _, level = self._score(response, verified, error, error_cycle)
             return level >= 4
 
@@ -235,10 +321,20 @@ def make_tinker_dataset_builder(
         async def step(self, action) -> StepResult:
             message, parse_success = self.renderer.parse_response(action)
             response = message["content"]
+            raw_decoded_text = self.renderer.tokenizer.decode(action)
             self._attempt += 1
 
+            if not parse_success:
+                logger.warning(
+                    "Renderer parse_response returned parse_success=False for puzzle %s on attempt %d",
+                    self.puzzle.name,
+                    self._attempt,
+                )
+                logger.warning("Raw decoded sample repr: %r", raw_decoded_text)
+                logger.warning("Assistant content repr after renderer parse: %r", response)
+
             verified, error, error_cycle, error_location, solution = _verify_with_omsim(
-                response, self.puzzle, self._cycle_limit
+                response, self.puzzle, self._cycle_limit, raw_decoded_text=raw_decoded_text,
             )
             is_final = verified or self._attempt >= max_attempts
 
